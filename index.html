@@ -37,7 +37,7 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // ==========================================
-    // НЕОСПОРИМЫЕ ДАННЫЕ ВЛАДЕЛЬЦА (HARCODED)
+    // НЕОСПОРИМЫЕ ДАННЫЕ ВЛАДЕЛЬЦА (HARDCODED)
     // ==========================================
     const OWNER_USERNAME = 'tvoyaddoma';
     const OWNER_PHONE = '+7 926 601 1608';
@@ -434,7 +434,6 @@
       const [aclUsers, setAclUsers] = useState(() => {
         const saved = localStorage.getItem('sm_crm_acl_users_v1');
         let parsed = saved ? JSON.parse(saved) : INITIAL_ACL_USERS;
-        // Гарантируем, что Владелец (@tvoyaddoma / +7 926 601 1608) ВСЕГДА присутствует и его роль НЕОСПОРИМА
         const hasOwner = parsed.some(u => isImmutableOwner(u.username, u.phone));
         if (!hasOwner) {
           parsed = [INITIAL_ACL_USERS[0], ...parsed];
@@ -488,12 +487,27 @@
       const [botInfo, setBotInfo] = useState(null);
       const [botStatus, setBotStatus] = useState('checking');
       const [activeTab, setActiveTab] = useState('kanban'); // 'kanban' | 'finance' | 'list' | 'assistant' | 'telegram' | 'users' | 'datalogs' | 'guide'
+      const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
       const [searchQuery, setSearchQuery] = useState('');
       const [stageFilter, setStageFilter] = useState('all');
       const [isModalOpen, setIsModalOpen] = useState(false);
       const [editingBrand, setEditingBrand] = useState(null);
+      const [brandToDelete, setBrandToDelete] = useState(null); // Состояние для диалогового окна подтверждения удаления
       const [toast, setToast] = useState(null);
       const [webAppUrl, setWebAppUrl] = useState(() => localStorage.getItem('sm_crm_webapp_url') || window.location.href);
+
+      const moreMenuRef = useRef(null);
+
+      // Закрытие выпадающего списка «Ещё» при клике вне его
+      useEffect(() => {
+        const handleClickOutside = (e) => {
+          if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) {
+            setIsMoreMenuOpen(false);
+          }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+      }, []);
 
       // Форма добавления нового пользователя/админа
       const [newAclUsername, setNewAclUsername] = useState('');
@@ -533,7 +547,6 @@
       useEffect(() => { localStorage.setItem('sm_crm_updates_v4', JSON.stringify(tgUpdates.slice(0, 40))); }, [tgUpdates]);
       useEffect(() => { localStorage.setItem('sm_crm_webapp_url', webAppUrl); }, [webAppUrl]);
 
-      // Добавление записи в Даталог (только Владелец видит вкладку Даталогов, но записываются действия всех ролей)
       const addAuditLog = (category, action, customActor = null) => {
         const actorName = customActor?.name || authState.tgUser?.first_name || 'Пользователь';
         const actorUsername = customActor?.username || authState.tgUser?.username || 'unknown';
@@ -562,7 +575,6 @@
           const initDataRaw = tg?.initData || '';
           const unsafeUser = tg?.initDataUnsafe?.user || null;
 
-          // 1. Строгая блокировка, если открыто в обычном браузере вне Telegram Mini App
           if (!tg || !initDataRaw || !unsafeUser) {
             setAuthState({
               status: 'denied',
@@ -573,7 +585,6 @@
             return;
           }
 
-          // 2. Криптографическая проверка подписи initData через Telegram Bot Token
           const isValidSignature = await verifyTelegramWebAppData(initDataRaw, botToken);
           if (!isValidSignature) {
             setAuthState({
@@ -588,7 +599,6 @@
           const currentUsername = cleanUsername(unsafeUser.username || '');
           const currentPhone = cleanPhone(unsafeUser.phone_number || '');
 
-          // 3. Проверка Неоспоримого Владельца (@tvoyaddoma / +7 926 601 1608)
           if (isImmutableOwner(currentUsername, currentPhone)) {
             setAuthState({
               status: 'authorized',
@@ -599,7 +609,6 @@
             return;
           }
 
-          // 4. Проверка в списке ACL (Админы и Пользователи)
           const matchedAcl = aclUsersRef.current.find(u => {
             const uName = cleanUsername(u.username);
             const uPhone = cleanPhone(u.phone);
@@ -614,7 +623,6 @@
               role: matchedAcl.role
             });
           } else {
-            // Любой человек вне 3-х ролей видит только "Доступ ограничен"
             setAuthState({
               status: 'denied',
               reason: 'not_in_acl',
@@ -632,7 +640,6 @@
         setTimeout(() => setToast(null), 3500);
       };
 
-      // Проверка связи с ботом (только для авторизованных)
       const checkBot = async (token) => {
         if (!token || authState.status !== 'authorized') return;
         setBotStatus('checking');
@@ -669,13 +676,11 @@
           return;
         }
 
-        // Защита статуса Владельца
         if (isImmutableOwner(cleanU, cleanP)) {
           showToast('Статус Владельца (@tvoyaddoma) неоспорим и уже закреплен в системе');
           return;
         }
 
-        // Админ может добавлять только Пользователей ('user'), Владелец — и Админов ('admin'), и Пользователей ('user')
         const targetRole = authState.role === 'owner' ? newAclRole : 'user';
 
         const exists = aclUsers.some(u => (cleanU && cleanUsername(u.username) === cleanU) || (cleanP && cleanPhone(u.phone) === cleanP));
@@ -708,7 +713,6 @@
       };
 
       const handleChangeUserRole = (targetUserId, nextRole) => {
-        // Только Владелец может назначать и снимать Админов
         if (authState.role !== 'owner') {
           showToast('Только Владелец может изменять роли администраторов');
           return;
@@ -733,13 +737,11 @@
         const target = aclUsers.find(u => u.id === targetUserId);
         if (!target) return;
 
-        // Никто не может удалить Владельца
         if (target.immutable || isImmutableOwner(target.username, target.phone)) {
           showToast('Невозможно удалить Владельца приложения!');
           return;
         }
 
-        // Админ может удалять только Пользователей, но не других Админов
         if (authState.role === 'admin' && target.role !== 'user') {
           showToast('Администратор может удалять только Пользователей');
           return;
@@ -884,7 +886,6 @@
         return null;
       };
 
-      // Опрос бота (только если пользователь авторизован)
       const fetchBotUpdates = async (silent = false) => {
         if (!botToken || authState.status !== 'authorized') return;
         if (!silent) setIsSyncing(true);
@@ -902,7 +903,6 @@
               const msg = item.message;
               if (msg) {
                 const senderUsername = cleanUsername(msg.from?.username || '');
-                // Проверяем, имеет ли отправитель в боте роль в системе
                 const senderAllowed =
                   isImmutableOwner(senderUsername, '') ||
                   aclUsersRef.current.some(u => cleanUsername(u.username) === senderUsername);
@@ -1107,13 +1107,26 @@
         addAuditLog('ДАННЫЕ БРЕНДОВ', `Изменен этап бренда «${target.name}»: «${oldStage}» → «${newStage}»`);
       };
 
-      const handleDeleteBrandWithLog = (brandId) => {
+      // Открытие диалогового окна подтверждения удаления бренда
+      const requestDeleteBrand = (brandId) => {
         const target = brands.find(b => b.id === brandId);
         if (!target) return;
-        if (!window.confirm(`Удалить карточку бренда «${target.name}»?`)) return;
-        setBrands(prev => prev.filter(b => b.id !== brandId));
-        addAuditLog('ДАННЫЕ БРЕНДОВ', `Удалена карточка бренда «${target.name}»`);
-        showToast(`Бренд ${target.name} удален`);
+        setBrandToDelete(target);
+      };
+
+      // Подтверждение удаления карточки бренда
+      const confirmDeleteBrand = () => {
+        if (!brandToDelete) return;
+        const deletedName = brandToDelete.name;
+        const deletedId = brandToDelete.id;
+        setBrands(prev => prev.filter(b => b.id !== deletedId));
+        addAuditLog('ДАННЫЕ БРЕНДОВ', `Удалена карточка бренда «${deletedName}»`);
+        setBrandToDelete(null);
+        if (editingBrand && editingBrand.id === deletedId) {
+          setIsModalOpen(false);
+          setEditingBrand(null);
+        }
+        showToast(`Бренд «${deletedName}» удален`);
       };
 
       const toggleVoice = () => {
@@ -1143,14 +1156,14 @@
         const data = {
           id: editingBrand?.id || 'b-' + Date.now(),
           name: fd.get('name').trim(),
-          category: fd.get('category').trim() || 'Одежда',
-          contactName: fd.get('contactName').trim(),
+          category: (fd.get('category') || '').trim() || 'Одежда',
+          contactName: (fd.get('contactName') || '').trim(),
           tgUsername: fd.get('tgUsername').trim().replace('@', ''),
           phone: fd.get('phone').trim(),
           stage: fd.get('stage'),
           railFormat: fd.get('railFormat').trim() || '1 рейл',
           monthlyFee: Number(fd.get('monthlyFee')) || 0,
-          commission: fd.get('commission').trim() || '25%',
+          commission: (fd.get('commission') || '').trim() || '25%',
           paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 10)),
           paidMonth: isPaidChecked ? curMonth : '',
           lastContact: getTodayDateString(),
@@ -1254,7 +1267,6 @@
       }
 
       if (authState.status !== 'authorized') {
-        // Для всех кто заходит с браузера или не входит в 3 роли — показываем ТОЛЬКО плашку "Доступ ограничен" и ничего больше
         return (
           <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl px-8 py-7 shadow-2xl text-center max-w-xs w-full">
@@ -1272,6 +1284,20 @@
       const currentRoleObj = ROLES[authState.role] || ROLES.user;
       const isOwner = authState.role === 'owner';
       const isAdminOrOwner = authState.role === 'owner' || authState.role === 'admin';
+
+      // Второстепенные вкладки, спрятанные под кнопку «Ещё»
+      const moreTabsList = [
+        { id: 'list', label: '📋 Таблица контактов' },
+        { id: 'assistant', label: '🎙 Чат и Голос' },
+        { id: 'telegram', label: '✈️ Входящие ТГ', badge: tgUpdates.length > 0 ? tgUpdates.length : null },
+        ...(isAdminOrOwner ? [{ id: 'users', label: `👥 Пользователи (${aclUsers.length})` }] : []),
+        ...(isOwner ? [
+          { id: 'datalogs', label: `📜 Даталоги (${auditLogs.length})` },
+          { id: 'guide', label: '⚙️ Настройки' }
+        ] : [])
+      ];
+
+      const activeMoreTabObj = moreTabsList.find(t => t.id === activeTab);
 
       // =========================================================
       // ОСНОВНОЙ ИНТЕРФЕЙС (ДОСТУПЕН ТОЛЬКО АВТОРИЗОВАННЫМ РОЛЯМ)
@@ -1401,37 +1427,77 @@
             </div>
           </div>
 
-          {/* Навигация по вкладкам (с учетом прав ролей) */}
+          {/* Навигация по вкладкам: на виду только Канбан, Финансы и выпадающий список «Ещё» */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div className="flex flex-wrap gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-semibold">
-              <button onClick={() => setActiveTab('kanban')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>Канбан</button>
-              <button onClick={() => setActiveTab('finance')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-                💰 Финансы и Оплаты {financeStats.overdueBrands.length > 0 && <span className="ml-1 px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">{financeStats.overdueBrands.length}</span>}
-              </button>
-              <button onClick={() => setActiveTab('list')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'list' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>Таблица</button>
-              <button onClick={() => setActiveTab('assistant')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'assistant' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>Чат и Голос</button>
-              <button onClick={() => setActiveTab('telegram')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'telegram' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-                Входящие ТГ {tgUpdates.length > 0 && <span className="ml-1 px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[10px]">{tgUpdates.length}</span>}
+            <div className="flex flex-wrap items-center gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-semibold relative">
+              <button
+                onClick={() => { setActiveTab('kanban'); setIsMoreMenuOpen(false); }}
+                className={`px-3.5 py-1.5 rounded-lg transition ${activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                Канбан
               </button>
 
-              {/* Вкладка управления ролями доступна Владельцу и Админу */}
-              {isAdminOrOwner && (
-                <button onClick={() => setActiveTab('users')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'users' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-                  👥 Пользователи ({aclUsers.length})
+              <button
+                onClick={() => { setActiveTab('finance'); setIsMoreMenuOpen(false); }}
+                className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                <span>💰 Финансы и Оплаты</span>
+                {financeStats.overdueBrands.length > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
+                    {financeStats.overdueBrands.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Выпадающее меню «Ещё» */}
+              <div className="relative" ref={moreMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsMoreMenuOpen(prev => !prev)}
+                  className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                    activeMoreTabObj
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>{activeMoreTabObj ? `Ещё: ${activeMoreTabObj.label}` : 'Ещё'}</span>
+                  {!activeMoreTabObj && tgUpdates.length > 0 && (
+                    <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[10px]">
+                      {tgUpdates.length}
+                    </span>
+                  )}
+                  <span className={`text-[10px] transition-transform ${isMoreMenuOpen ? 'rotate-180' : ''}`}>▾</span>
                 </button>
-              )}
 
-              {/* Вкладка Даталогов и Настроек Бота доступна ТОЛЬКО Владельцу */}
-              {isOwner && (
-                <>
-                  <button onClick={() => setActiveTab('datalogs')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'datalogs' ? 'bg-amber-500 text-slate-950 font-bold shadow-xs' : 'text-slate-700'}`}>
-                    📜 Даталоги ({auditLogs.length})
-                  </button>
-                  <button onClick={() => setActiveTab('guide')} className={`px-3 py-1.5 rounded-lg ${activeTab === 'guide' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-                    ⚙️ Настройки
-                  </button>
-                </>
-              )}
+                {isMoreMenuOpen && (
+                  <div className="absolute left-0 mt-1.5 w-60 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-40">
+                    {moreTabsList.map(item => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveTab(item.id);
+                          setIsMoreMenuOpen(false);
+                        }}
+                        className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between transition ${
+                          activeTab === item.id
+                            ? 'bg-slate-900 text-white font-bold'
+                            : 'text-slate-700 hover:bg-slate-100 font-medium'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {item.badge && (
+                          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                            activeTab === item.id ? 'bg-sky-400 text-slate-950' : 'bg-sky-500 text-white'
+                          }`}>
+                            {item.badge}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {(activeTab === 'kanban' || activeTab === 'list') && (
@@ -1478,7 +1544,7 @@
                                   <div className="font-bold text-sm text-slate-900">{brand.name}</div>
                                   <div className="text-[11px] text-slate-500">{brand.category}</div>
                                 </div>
-                                <button onClick={() => { setEditingBrand(brand); setIsModalOpen(true); }} className="text-slate-400 hover:text-slate-700 text-xs">✎</button>
+                                <button onClick={() => { setEditingBrand(brand); setIsModalOpen(true); }} className="text-slate-400 hover:text-slate-700 text-xs p-1" title="Редактировать карточку">✎</button>
                               </div>
 
                               <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -1679,7 +1745,7 @@
                         </td>
                         <td className="p-3.5 text-right whitespace-nowrap">
                           <button onClick={() => { setEditingBrand(b); setIsModalOpen(true); }} className="text-slate-500 hover:text-slate-900 mr-2 font-medium">Ред.</button>
-                          <button onClick={() => handleDeleteBrandWithLog(b.id)} className="text-rose-500 font-medium">Удалить</button>
+                          <button onClick={() => requestDeleteBrand(b.id)} className="text-rose-500 hover:text-rose-700 font-medium">Удалить</button>
                         </td>
                       </tr>
                     );
@@ -1787,7 +1853,6 @@
           {/* ВКЛАДКА 6: УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И РОЛЯМИ (ВЛАДЕЛЕЦ И АДМИН) */}
           {activeTab === 'users' && isAdminOrOwner && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Форма добавления нового участника */}
               <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
                 <div>
                   <h3 className="font-bold text-sm text-slate-900">➕ Добавить доступ в приложение</h3>
@@ -1850,7 +1915,6 @@
                 </form>
               </div>
 
-              {/* Таблица ролей и пользователей */}
               <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
                 <h3 className="font-bold text-sm text-slate-900 mb-1">👥 Список ролей и доступов к CRM</h3>
                 <p className="text-xs text-slate-500 mb-4">
@@ -2035,43 +2099,70 @@
           {isModalOpen && (
             <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
               <form onSubmit={handleSaveModal} className="bg-white p-6 rounded-2xl w-full max-w-md space-y-3 text-xs shadow-2xl max-h-[90vh] overflow-y-auto">
-                <h3 className="text-base font-bold text-slate-900">{editingBrand ? `Редактировать: ${editingBrand.name}` : 'Добавить бренд'}</h3>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <h3 className="text-base font-bold text-slate-900">
+                    {editingBrand ? `Редактировать: ${editingBrand.name}` : 'Добавить бренд'}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => { setIsModalOpen(false); setEditingBrand(null); }}
+                    className="text-slate-400 hover:text-slate-700 text-sm font-bold px-1.5"
+                  >
+                    ✕
+                  </button>
+                </div>
+
                 <div>
                   <label className="block font-semibold mb-1">Название бренда *</label>
-                  <input name="name" defaultValue={editingBrand?.name || ''} required className="w-full border rounded-lg p-2" />
+                  <input name="name" defaultValue={editingBrand?.name || ''} required className="w-full border border-slate-200 rounded-lg p-2 outline-none focus:border-slate-900" />
                 </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block font-semibold mb-1">Категория</label>
+                    <input name="category" defaultValue={editingBrand?.category || 'Одежда / Streetwear'} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Контактное лицо</label>
+                    <input name="contactName" defaultValue={editingBrand?.contactName || ''} placeholder="Имя менеджера" className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block font-semibold mb-1">Telegram @username</label>
-                    <input name="tgUsername" defaultValue={editingBrand?.tgUsername || ''} placeholder="username" className="w-full border rounded-lg p-2" />
+                    <input name="tgUsername" defaultValue={editingBrand?.tgUsername || ''} placeholder="username" className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">Телефон</label>
-                    <input name="phone" defaultValue={editingBrand?.phone || ''} placeholder="+7..." className="w-full border rounded-lg p-2" />
+                    <input name="phone" defaultValue={editingBrand?.phone || ''} placeholder="+7..." className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                 </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block font-semibold mb-1">Аренда (₽/мес)</label>
-                    <input name="monthlyFee" type="number" defaultValue={editingBrand?.monthlyFee ?? 30000} className="w-full border rounded-lg p-2" />
+                    <input name="monthlyFee" type="number" defaultValue={editingBrand?.monthlyFee ?? 30000} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">День оплаты (число 1–31)</label>
-                    <input name="paymentDay" type="number" min="1" max="31" defaultValue={editingBrand?.paymentDay ?? 10} className="w-full border rounded-lg p-2" />
+                    <input name="paymentDay" type="number" min="1" max="31" defaultValue={editingBrand?.paymentDay ?? 10} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                 </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block font-semibold mb-1">Этап воронки</label>
-                    <select name="stage" defaultValue={editingBrand?.stage || 'lead'} className="w-full border rounded-lg p-2 bg-white">
+                    <select name="stage" defaultValue={editingBrand?.stage || 'lead'} className="w-full border border-slate-200 rounded-lg p-2 bg-white outline-none">
                       {STAGES.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">Формат рейлов</label>
-                    <input name="railFormat" defaultValue={editingBrand?.railFormat || '1 рейл'} className="w-full border rounded-lg p-2" />
+                    <input name="railFormat" defaultValue={editingBrand?.railFormat || '1 рейл'} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                 </div>
+
                 <div className="pt-1">
                   <label className="flex items-center gap-2 cursor-pointer bg-emerald-50 p-2.5 rounded-lg border border-emerald-200">
                     <input
@@ -2082,15 +2173,81 @@
                     <span className="font-bold text-emerald-900">Оплата за текущий месяц ({currentMonthKey}) получена</span>
                   </label>
                 </div>
+
                 <div>
                   <label className="block font-semibold mb-1">Заметки и история переговоров</label>
-                  <textarea name="notes" defaultValue={editingBrand?.notes || ''} rows="3" className="w-full border rounded-lg p-2"></textarea>
+                  <textarea name="notes" defaultValue={editingBrand?.notes || ''} rows="3" className="w-full border border-slate-200 rounded-lg p-2 outline-none"></textarea>
                 </div>
-                <div className="flex justify-end gap-2 pt-2">
-                  <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 border rounded-lg">Отмена</button>
-                  <button type="submit" className="px-5 py-2 bg-slate-900 text-white rounded-lg font-semibold">Сохранить</button>
+
+                <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-100">
+                  {editingBrand ? (
+                    <button
+                      type="button"
+                      onClick={() => requestDeleteBrand(editingBrand.id)}
+                      className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl font-semibold flex items-center gap-1.5 transition"
+                      title="Удалить карточку бренда"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                      <span>Удалить</span>
+                    </button>
+                  ) : (
+                    <div />
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setIsModalOpen(false); setEditingBrand(null); }}
+                      className="px-4 py-2 border border-slate-200 hover:bg-slate-50 rounded-xl font-medium"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold transition"
+                    >
+                      Сохранить
+                    </button>
+                  </div>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* ДИАЛОГОВОЕ ОКНО ПОДТВЕРЖДЕНИЯ ИЛИ ОТМЕНЫ УДАЛЕНИЯ КАРТОЧКИ БРЕНДА */}
+          {brandToDelete && (
+            <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60]">
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 max-w-sm w-full shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-base font-bold text-slate-900">Удалить карточку бренда?</h4>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Вы действительно хотите безвозвратно удалить бренд <span className="font-bold text-slate-800">«{brandToDelete.name}»</span> и всю историю заметок по нему?
+                  </p>
+                </div>
+                <div className="flex items-center gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setBrandToDelete(null)}
+                    className="flex-1 py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-xs transition"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteBrand}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition"
+                  >
+                    Да, удалить
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
