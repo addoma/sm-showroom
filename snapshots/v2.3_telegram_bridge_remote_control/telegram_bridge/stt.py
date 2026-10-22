@@ -39,8 +39,9 @@ def get_telegram_file_bytes(bot_token: str, file_id: str) -> tuple[bytes, str]:
         
     return file_bytes, mime_type
 
-def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str, api_key: str, model_name: str = "gemini-flash-latest") -> str:
-    """Transcribes audio using Google Gemini Flash API via REST."""
+def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str, api_key: str, model_name: str = "gemini-3.5-flash-lite") -> str:
+    """Transcribes audio using Google Gemini Flash API with automatic model fallback and retries."""
+    import time
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured")
     
@@ -71,33 +72,62 @@ def transcribe_audio_gemini(audio_bytes: bytes, mime_type: str, api_key: str, mo
         ]
     }
     
-    # Try primary model, fallback to gemini-2.5-flash if needed
-    models_to_try = [model_name, "gemini-flash-latest", "gemini-2.5-flash"]
+    # Priority list of models with high availability and speech understanding
+    candidate_models = [
+        model_name,
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-transcribe",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest"
+    ]
+    models_to_try = []
+    for cand in candidate_models:
+        if cand and cand not in models_to_try:
+            models_to_try.append(cand)
+            
     last_err = None
+    had_503 = False
     
     for m in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
         data_json = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(url, data=data_json, headers={"Content-Type": "application/json"})
         
-        try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                res_body = json.loads(resp.read().decode("utf-8"))
-                candidates = res_body.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    texts = [p.get("text", "") for p in parts if "text" in p]
-                    recognized = "".join(texts).strip()
-                    if recognized:
-                        return recognized
-        except urllib.error.HTTPError as e:
-            err_text = e.read().decode("utf-8", errors="replace")
-            last_err = f"HTTP {e.code}: {err_text}"
-            if e.code == 404:
+        # Up to 2 attempts per model with short backoff
+        for attempt in range(2):
+            req = urllib.request.Request(url, data=data_json, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    res_body = json.loads(resp.read().decode("utf-8"))
+                    candidates = res_body.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        texts = [p.get("text", "") for p in parts if "text" in p]
+                        recognized = "".join(texts).strip()
+                        if recognized:
+                            return recognized
+            except urllib.error.HTTPError as e:
+                err_text = e.read().decode("utf-8", errors="replace")
+                last_err = f"HTTP {e.code}: {err_text}"
+                
+                # Invalid API key or fatal format issue: don't loop endlessly
+                if e.code in (401, 403):
+                    raise RuntimeError(f"Ошибка авторизации Gemini API: {last_err}")
+                
+                if e.code == 503:
+                    had_503 = True
+                
+                # Retryable / fallback codes (503 High Demand, 429 Rate Limit, 404 Model Not Found, 500/502/504)
+                if e.code in (404, 429, 500, 502, 503, 504):
+                    time.sleep(1.0)
+                    continue
+                else:
+                    break
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(1.0)
                 continue
-            raise RuntimeError(f"Gemini API Error ({last_err})")
-        except Exception as e:
-            last_err = str(e)
-            continue
-            
+                
+    if had_503:
+        raise RuntimeError("Серверы Gemini испытывают временную пиковую нагрузку (503). Повторите голосовое сообщение через минуту или отправьте задачу текстом.")
     raise RuntimeError(f"Не удалось распознать речь через Gemini API: {last_err}")

@@ -50,7 +50,7 @@ def load_config():
         "allowed_chat_id": None,
         "conversation_id": "e942a502-2c31-4a43-9392-a2b04b0a99ba",
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
-        "gemini_model": "gemini-flash-latest",
+        "gemini_model": "gemini-3.5-flash-lite",
         "ipc_port": 18822,
         "agentapi_path": "/Applications/Gemini.app/Contents/Helpers/agy"
     }
@@ -259,7 +259,7 @@ def process_telegram_update(update: dict):
             try:
                 bot_token = CONFIG.get("bot_token")
                 api_key = CONFIG.get("gemini_api_key")
-                model_name = CONFIG.get("gemini_model", "gemini-flash-latest")
+                model_name = CONFIG.get("gemini_model", "gemini-3.5-flash-lite")
                 
                 audio_bytes, mime = get_telegram_file_bytes(bot_token, file_id)
                 recognized_text = transcribe_audio_gemini(audio_bytes, mime, api_key, model_name)
