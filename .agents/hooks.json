@@ -1,0 +1,23 @@
+{
+  "telegram-bridge": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/ivantugolukov/.gemini/antigravity/telegram_bridge/hooks/pre_tool_use.py",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 /Users/ivantugolukov/.gemini/antigravity/telegram_bridge/hooks/stop_hook.py",
+        "timeout": 15
+      }
+    ]
+  }
+}

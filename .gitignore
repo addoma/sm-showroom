@@ -1,1 +1,3 @@
 .DS_Store
+telegram_bridge/config.json
+**/telegram_bridge/config.json

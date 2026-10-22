@@ -1,0 +1,11 @@
+{
+  "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "allowed_username": "tvoyaddoma",
+  "allowed_phone": "79266011608",
+  "allowed_chat_id": null,
+  "conversation_id": "e942a502-2c31-4a43-9392-a2b04b0a99ba",
+  "gemini_api_key": "YOUR_GEMINI_API_KEY",
+  "gemini_model": "gemini-flash-latest",
+  "ipc_port": 18822,
+  "agentapi_path": "/Applications/Gemini.app/Contents/Helpers/agy"
+}
