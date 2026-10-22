@@ -144,6 +144,10 @@
     const DEFAULT_BOT_TOKEN = '8312776596:AAE0LlYuKisLzebdftj2fJaQ5571RSu5CBI';
     const DEFAULT_BOT_USERNAME = 'SM_Brand_CRM_bot';
     const DEFAULT_API_SECRET_KEY = 'SHOWROOM_CRM_SECRET_2026';
+<<<<<<< HEAD
+    const DEFAULT_GAS_URL = ''; // URL развернутого скрипта Google Apps Script (https://script.google.com/macros/s/.../exec)
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
     const ROLES = {
       owner: { id: 'owner', title: 'Владелец', badge: 'bg-amber-500 text-slate-950 font-black border-amber-400' },
@@ -172,6 +176,14 @@
       return digits;
     };
 
+<<<<<<< HEAD
+    const cleanTgId = (id) => {
+      if (!id) return '';
+      return String(id).trim();
+    };
+
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
     // Проверка, является ли запись или пользователь Неоспоримым Владельцем
     const isImmutableOwner = (username, phone) => {
       const u = cleanUsername(username);
@@ -341,6 +353,10 @@
         name: 'Владелец Шоурума',
         role: 'owner',
         immutable: true,
+<<<<<<< HEAD
+        tgUserId: '',
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
         addedAt: 'Системный корневой доступ'
       }
     ];
@@ -367,6 +383,33 @@
         return data;
       },
 
+<<<<<<< HEAD
+      async checkAccess(url, apiKey, { tgUserId, username, phone, name }) {
+        if (!url) return null;
+        return await this.callApi(url, {
+          action: 'checkAccess',
+          apiKey: apiKey || '',
+          tgUserId: String(tgUserId || ''),
+          username: String(username || ''),
+          phone: String(phone || ''),
+          name: String(name || '')
+        });
+      },
+
+      async requestAccess(url, apiKey, { tgUserId, username, phone, name }) {
+        if (!url) return null;
+        return await this.callApi(url, {
+          action: 'requestAccess',
+          apiKey: apiKey || '',
+          tgUserId: String(tgUserId || ''),
+          username: String(username || ''),
+          phone: String(phone || ''),
+          name: String(name || '')
+        });
+      },
+
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       async getAllData(url, apiKey) {
         if (!url) return null;
         return await this.callApi(url, {
@@ -658,10 +701,17 @@
       });
 
       // --- НАСТРОЙКИ GOOGLE APPS SCRIPT И ОБЛАЧНОЙ СИНХРОНИЗАЦИИ ---
+<<<<<<< HEAD
+      const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('sm_crm_gas_url') || DEFAULT_GAS_URL);
+      const [gasApiKey, setGasApiKey] = useState(() => localStorage.getItem('sm_crm_gas_key') || DEFAULT_API_SECRET_KEY);
+      // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
+      const [cloudStatus, setCloudStatus] = useState(() => ((localStorage.getItem('sm_crm_gas_url') || DEFAULT_GAS_URL) ? 'syncing' : 'not_configured'));
+=======
       const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('sm_crm_gas_url') || '');
       const [gasApiKey, setGasApiKey] = useState(() => localStorage.getItem('sm_crm_gas_key') || DEFAULT_API_SECRET_KEY);
       // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
       const [cloudStatus, setCloudStatus] = useState(() => (localStorage.getItem('sm_crm_gas_url') ? 'syncing' : 'not_configured'));
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
       const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
       const [isSendingBackup, setIsSendingBackup] = useState(false);
@@ -697,11 +747,23 @@
         return () => document.removeEventListener('mousedown', handleClickOutside);
       }, []);
 
+<<<<<<< HEAD
+      // Форма добавления нового пользователя/админа и состояния авторизации
+      const [newAclTgId, setNewAclTgId] = useState('');
+=======
       // Форма добавления нового пользователя/админа
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       const [newAclUsername, setNewAclUsername] = useState('');
       const [newAclPhone, setNewAclPhone] = useState('');
       const [newAclName, setNewAclName] = useState('');
       const [newAclRole, setNewAclRole] = useState('user');
+<<<<<<< HEAD
+      const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+      const [isRequestingAccess, setIsRequestingAccess] = useState(false);
+      const [accessRequestSent, setAccessRequestSent] = useState(false);
+      const [detectedContactPhone, setDetectedContactPhone] = useState('');
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
       // Чат-ассистент
       const [commandInput, setCommandInput] = useState('');
@@ -781,6 +843,253 @@
         queueCloudSync(() => CloudStorageService.appendLog(gasUrlRef.current, gasApiKeyRef.current, entry));
       };
 
+<<<<<<< HEAD
+      // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP (ZERO-DEADLOCK + CLOUD PRE-AUTH) ---
+      const authenticateTelegramSession = useCallback(async (overridePhone = null) => {
+        setIsCheckingAuth(true);
+        const tg = window.Telegram?.WebApp;
+        if (tg) {
+          tg.ready();
+          try { tg.expand(); } catch (e) {}
+
+          // Отключение закрытия шторки свайпом вниз при прокрутке внутри Mini App (API 7.7+)
+          if (typeof tg.disableVerticalSwipes === 'function') {
+            try { tg.disableVerticalSwipes(); } catch (e) {}
+          }
+
+          // Защита от случайного закрытия
+          if (typeof tg.enableClosingConfirmation === 'function') {
+            try { tg.enableClosingConfirmation(); } catch (e) {}
+          }
+
+          // Установка цвета фона и шапки для системного статус-бара iOS (соответствует фону CRM #f8fafc)
+          if (typeof tg.setHeaderColor === 'function') {
+            try { tg.setHeaderColor('#f8fafc'); } catch (e) {}
+          }
+          if (typeof tg.setBackgroundColor === 'function') {
+            try { tg.setBackgroundColor('#f8fafc'); } catch (e) {}
+          }
+        }
+
+        const initDataRaw = tg?.initData || '';
+        const unsafeUser = tg?.initDataUnsafe?.user || null;
+
+        if (!tg || !unsafeUser) {
+          setAuthState({
+            status: 'denied',
+            reason: 'not_in_telegram',
+            tgUser: null,
+            role: null
+          });
+          setIsCheckingAuth(false);
+          return;
+        }
+
+        const isValidSignature = await verifyTelegramWebAppData(initDataRaw, botToken);
+        if (!isValidSignature) {
+          setAuthState({
+            status: 'denied',
+            reason: 'invalid_signature',
+            tgUser: unsafeUser,
+            role: null
+          });
+          setIsCheckingAuth(false);
+          return;
+        }
+
+        const currentTgId = cleanTgId(unsafeUser.id || '');
+        const currentUsername = cleanUsername(unsafeUser.username || '');
+        const effectivePhone = overridePhone || detectedContactPhone || unsafeUser.phone_number || '';
+        const currentPhone = cleanPhone(effectivePhone);
+        const currentName = [unsafeUser.first_name, unsafeUser.last_name].filter(Boolean).join(' ') || currentUsername || 'Пользователь';
+
+        // 1. Корневой неизменяемый Владелец (@tvoyaddoma)
+        if (isImmutableOwner(currentUsername, currentPhone)) {
+          setAuthState({
+            status: 'authorized',
+            reason: '',
+            tgUser: unsafeUser,
+            role: 'owner'
+          });
+          setIsCheckingAuth(false);
+          return;
+        }
+
+        // 2. Локальный кэш ACL (Offline-first)
+        const matchedAcl = aclUsersRef.current.find(u => {
+          const uTgId = cleanTgId(u.tgUserId || '');
+          const uName = cleanUsername(u.username);
+          const uPhone = cleanPhone(u.phone);
+          return (uTgId && currentTgId && uTgId === currentTgId) ||
+                 (uName && currentUsername && uName === currentUsername) ||
+                 (uPhone && currentPhone && uPhone === currentPhone);
+        });
+
+        if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'owner')) {
+          if (currentTgId && !matchedAcl.tgUserId) {
+            setAclUsers(prev => prev.map(u => u.id === matchedAcl.id ? { ...u, tgUserId: currentTgId } : u));
+          }
+          setAuthState({
+            status: 'authorized',
+            reason: '',
+            tgUser: unsafeUser,
+            role: matchedAcl.role
+          });
+          setIsCheckingAuth(false);
+          return;
+        }
+
+        // 3. Предварительная проверка через Cloud API (Zero-Deadlock для новых устройств)
+        const activeGasUrl = gasUrlRef.current || DEFAULT_GAS_URL;
+        if (activeGasUrl) {
+          try {
+            const res = await CloudStorageService.checkAccess(activeGasUrl, gasApiKeyRef.current, {
+              tgUserId: currentTgId,
+              username: currentUsername,
+              phone: currentPhone,
+              name: currentName
+            });
+
+            if (res && res.authorized && res.user) {
+              const cloudUser = res.user;
+              setAclUsers(prev => {
+                const existsIdx = prev.findIndex(u =>
+                  (currentTgId && cleanTgId(u.tgUserId) === currentTgId) ||
+                  (currentUsername && cleanUsername(u.username) === currentUsername) ||
+                  (currentPhone && cleanPhone(u.phone) === currentPhone)
+                );
+                if (existsIdx >= 0) {
+                  const updated = [...prev];
+                  updated[existsIdx] = {
+                    ...updated[existsIdx],
+                    tgUserId: cloudUser.tgUserId || currentTgId,
+                    role: cloudUser.role || updated[existsIdx].role
+                  };
+                  return updated;
+                } else {
+                  return [...prev, {
+                    id: 'acl-' + Date.now(),
+                    tgUserId: cloudUser.tgUserId || currentTgId,
+                    username: cloudUser.username || currentUsername,
+                    phone: cloudUser.phone || currentPhone,
+                    name: cloudUser.name || currentName,
+                    role: cloudUser.role || 'user',
+                    immutable: false,
+                    addedAt: new Date().toLocaleString('ru-RU')
+                  }];
+                }
+              });
+
+              setAuthState({
+                status: 'authorized',
+                reason: '',
+                tgUser: unsafeUser,
+                role: cloudUser.role || 'user'
+              });
+              setIsCheckingAuth(false);
+              return;
+            }
+          } catch (err) {
+            console.warn('Ошибка облачной предварительной проверки ACL:', err);
+          }
+        }
+
+        // Если не авторизован
+        setAuthState({
+          status: 'denied',
+          reason: 'not_in_acl',
+          tgUser: unsafeUser,
+          role: null
+        });
+        setIsCheckingAuth(false);
+      }, [botToken, detectedContactPhone]);
+
+      useEffect(() => {
+        authenticateTelegramSession();
+      }, [authenticateTelegramSession]);
+
+      // Запрос контакта у Telegram для подтверждения номера телефона сотрудника
+      const handleRequestContact = () => {
+        const tg = window.Telegram?.WebApp;
+        if (!tg) {
+          showToast('Доступно только внутри Telegram');
+          return;
+        }
+        if (typeof tg.requestContact === 'function') {
+          tg.requestContact((shared, response) => {
+            if (shared) {
+              const phone = response?.responseUnsafe?.contact?.phone_number || response?.contact?.phone_number || '';
+              if (phone) {
+                setDetectedContactPhone(phone);
+                showToast(`📱 Номер получен: +${cleanPhone(phone)}. Проверяем доступ...`);
+                authenticateTelegramSession(phone);
+              } else {
+                showToast('Номер телефона не передан');
+              }
+            } else {
+              showToast('Отправка контакта отменена');
+            }
+          });
+        } else {
+          showToast('Ваш клиент Telegram не поддерживает передачу контакта');
+        }
+      };
+
+      // Отправка запроса на получение доступа Владельцу в Google Таблицу
+      const handleSendAccessRequest = async () => {
+        const tg = window.Telegram?.WebApp;
+        const unsafeUser = tg?.initDataUnsafe?.user || {};
+        const activeGasUrl = gasUrlRef.current || DEFAULT_GAS_URL;
+        if (!activeGasUrl) {
+          showToast('Ошибка: адрес облачной базы не настроен');
+          return;
+        }
+
+        setIsRequestingAccess(true);
+        try {
+          const currentTgId = cleanTgId(unsafeUser.id || '');
+          const currentUsername = cleanUsername(unsafeUser.username || '');
+          const currentPhone = cleanPhone(detectedContactPhone || unsafeUser.phone_number || '');
+          const currentName = [unsafeUser.first_name, unsafeUser.last_name].filter(Boolean).join(' ') || currentUsername || 'Пользователь';
+
+          await CloudStorageService.requestAccess(activeGasUrl, gasApiKeyRef.current, {
+            tgUserId: currentTgId,
+            username: currentUsername,
+            phone: currentPhone,
+            name: currentName,
+            note: 'Запрос доступа через кнопку в Mini App'
+          });
+
+          setAccessRequestSent(true);
+          showToast('✅ Запрос доступа отправлен Владельцу в Google Таблицу');
+        } catch (err) {
+          console.error('Request access error:', err);
+          showToast('Ошибка при отправке запроса. Попробуйте позже.');
+        } finally {
+          setIsRequestingAccess(false);
+        }
+      };
+
+      // Быстрая вставка данных неавторизованного пользователя из Даталога в форму ACL
+      const handlePrefillAclFromLog = (item) => {
+        setActiveTab('users');
+        if (item.actorUsername && item.actorUsername !== 'unknown' && item.actorUsername !== '—') {
+          setNewAclUsername(cleanUsername(item.actorUsername));
+        }
+        if (item.actorName && item.actorName !== 'Пользователь') {
+          setNewAclName(item.actorName);
+        }
+        const idMatch = item.action.match(/ID[:\s]+(\d+)/i);
+        if (idMatch && idMatch[1]) {
+          setNewAclTgId(idMatch[1]);
+        }
+        const phoneMatch = item.action.match(/\+?\d[\d\s\-()]{8,}\d/);
+        if (phoneMatch && phoneMatch[0]) {
+          setNewAclPhone(phoneMatch[0].trim());
+        }
+        showToast('Данные подставлены в форму добавления доступа');
+      };
+=======
       // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP ПРИ ЗАПУСКЕ ---
       useEffect(() => {
         const authenticateTelegramSession = async () => {
@@ -870,6 +1179,7 @@
 
         authenticateTelegramSession();
       }, [botToken, aclUsers]);
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
       // --- ПОДДЕРЖКА ДИНАМИЧЕСКИХ РЕЖИМОВ TELEGRAM SDK (FULLSCREEN, FULLSIZE, COMPACT) ---
       useEffect(() => {
@@ -1266,11 +1576,20 @@
         e.preventDefault();
         if (authState.role !== 'owner' && authState.role !== 'admin') return;
 
+<<<<<<< HEAD
+        const cleanTg = cleanTgId(newAclTgId);
+        const cleanU = cleanUsername(newAclUsername);
+        const cleanP = cleanPhone(newAclPhone);
+
+        if (!cleanTg && !cleanU && !cleanP) {
+          showToast('Укажите Telegram ID, @username или номер телефона');
+=======
         const cleanU = cleanUsername(newAclUsername);
         const cleanP = cleanPhone(newAclPhone);
 
         if (!cleanU && !cleanP) {
           showToast('Укажите Telegram @username или номер телефона');
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           return;
         }
 
@@ -1281,17 +1600,34 @@
 
         const targetRole = authState.role === 'owner' ? newAclRole : 'user';
 
+<<<<<<< HEAD
+        const exists = aclUsers.some(u =>
+          (cleanTg && cleanTgId(u.tgUserId) === cleanTg) ||
+          (cleanU && cleanUsername(u.username) === cleanU) ||
+          (cleanP && cleanPhone(u.phone) === cleanP)
+        );
+        if (exists) {
+          showToast('Пользователь с таким ID, @username или телефоном уже есть в списке');
+=======
         const exists = aclUsers.some(u => (cleanU && cleanUsername(u.username) === cleanU) || (cleanP && cleanPhone(u.phone) === cleanP));
         if (exists) {
           showToast('Пользователь с таким @username или телефоном уже есть в списке');
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           return;
         }
 
         const newUserObj = {
           id: 'acl-' + Date.now(),
+<<<<<<< HEAD
+          tgUserId: cleanTg,
+          username: cleanU,
+          phone: newAclPhone.trim(),
+          name: newAclName.trim() || (cleanU ? `@${cleanU}` : (cleanTg ? `ID: ${cleanTg}` : newAclPhone.trim())),
+=======
           username: cleanU,
           phone: newAclPhone.trim(),
           name: newAclName.trim() || (cleanU ? `@${cleanU}` : newAclPhone.trim()),
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           role: targetRole,
           immutable: false,
           addedAt: new Date().toLocaleString('ru-RU')
@@ -1301,9 +1637,16 @@
         queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, newUserObj, 'create'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
+<<<<<<< HEAD
+          `Добавлен участник ${newUserObj.name} (${cleanTg ? 'ID: ' + cleanTg + ' ' : ''}${cleanU ? '@' + cleanU + ' ' : ''}${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
+        );
+
+        setNewAclTgId('');
+=======
           `Добавлен участник ${newUserObj.name} (${cleanU ? '@' + cleanU : ''} ${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
         );
 
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
         setNewAclUsername('');
         setNewAclPhone('');
         setNewAclName('');
@@ -1875,6 +2218,21 @@
       // =========================================================
       // ЭКРАН ПРОВЕРКИ ИЛИ ПОЛНОЙ БЛОКИРОВКИ ("ДОСТУП ОГРАНИЧЕН")
       // =========================================================
+<<<<<<< HEAD
+      if (authState.status === 'checking' || isCheckingAuth) {
+        return (
+          <div
+            className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 select-none tma-safe-area text-white text-center"
+            style={{ paddingTop: `${topSafeInset}px` }}
+          >
+            <div className="w-14 h-14 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center mx-auto mb-4 text-2xl animate-pulse">
+              ☁️
+            </div>
+            <div className="text-base font-bold tracking-tight mb-1">Проверка прав доступа в CRM...</div>
+            <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+              Сверяем ваш профиль Telegram с облачной базой данных шоурума
+            </p>
+=======
       if (authState.status === 'checking') {
         return (
           <div
@@ -1884,11 +2242,106 @@
             <div className="text-slate-500 text-xs font-mono tracking-widest uppercase animate-pulse">
               Проверка криптографической подписи Telegram API...
             </div>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           </div>
         );
       }
 
       if (authState.status !== 'authorized') {
+<<<<<<< HEAD
+        const tg = window.Telegram?.WebApp;
+        const u = authState.tgUser || tg?.initDataUnsafe?.user || {};
+        const uId = cleanTgId(u.id || '');
+        const uName = cleanUsername(u.username || '');
+        const uFullName = [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Пользователь';
+        const displayPhone = detectedContactPhone ? `+${cleanPhone(detectedContactPhone)}` : (u.phone_number ? `+${cleanPhone(u.phone_number)}` : null);
+
+        return (
+          <div
+            className="min-h-screen bg-slate-950 flex items-center justify-center p-5 select-none tma-safe-area"
+            style={{ paddingTop: `${topSafeInset}px`, paddingBottom: '24px' }}
+          >
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-center max-w-sm w-full space-y-5 animate-in fade-in duration-200">
+              <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto text-2xl shadow-inner">
+                🔒
+              </div>
+
+              <div>
+                <h1 className="text-lg font-bold text-white tracking-tight">
+                  Доступ ограничен
+                </h1>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  Ваш профиль Telegram не найден в списке авторизованных сотрудников шоурума.
+                </p>
+              </div>
+
+              {/* Карточка обнаруженных данных Telegram */}
+              <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-3.5 text-left text-xs space-y-2">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>Данные Telegram</span>
+                  <span className="text-slate-400 font-mono">ID: {uId || 'не определен'}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Имя:</span>
+                  <span className="font-semibold text-white">{uFullName}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Ник:</span>
+                  <span className="font-mono text-sky-400 font-semibold">{uName ? `@${uName}` : 'без @username'}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Телефон:</span>
+                  <span className={displayPhone ? "font-semibold text-emerald-400 font-mono" : "text-slate-400 italic"}>
+                    {displayPhone || 'Не подтвержден'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Кнопки действий */}
+              <div className="space-y-2.5 pt-1">
+                {/* 1. Подтвердить по номеру телефона */}
+                <button
+                  onClick={handleRequestContact}
+                  className="w-full py-3 px-4 bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-sky-950"
+                >
+                  <span>📱</span>
+                  <span>Подтвердить по номеру телефона</span>
+                </button>
+
+                {/* 2. Запросить доступ у Владельца */}
+                <button
+                  onClick={handleSendAccessRequest}
+                  disabled={isRequestingAccess || accessRequestSent}
+                  className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2 border ${
+                    accessRequestSent
+                      ? 'bg-emerald-950/60 border-emerald-700/50 text-emerald-300'
+                      : 'bg-slate-800 hover:bg-slate-700 active:bg-slate-850 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  <span>{accessRequestSent ? '✅' : (isRequestingAccess ? '⏳' : '📩')}</span>
+                  <span>
+                    {accessRequestSent
+                      ? 'Запрос отправлен Владельцу'
+                      : (isRequestingAccess ? 'Отправка запроса...' : 'Запросить доступ у Владельца')}
+                  </span>
+                </button>
+
+                {/* 3. Проверить снова */}
+                <button
+                  onClick={() => authenticateTelegramSession()}
+                  className="w-full py-2.5 px-4 bg-transparent hover:bg-slate-800/50 active:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5"
+                >
+                  <span>🔄</span>
+                  <span>Проверить снова</span>
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800/80">
+                <p className="text-[11px] text-slate-400">
+                  Владелец системы: <span className="text-amber-400 font-bold">@tvoyaddoma</span>
+                </p>
+              </div>
+=======
         return (
           <div
             className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area"
@@ -1901,6 +2354,7 @@
               <h1 className="text-base font-bold text-white tracking-tight">
                 Доступ ограничен
               </h1>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
             </div>
           </div>
         );
@@ -2780,6 +3234,22 @@
 
                 <form onSubmit={handleAddAclUser} className="space-y-3">
                   <div>
+<<<<<<< HEAD
+                    <label className="block font-semibold text-slate-700 mb-1">Telegram ID (числовой)</label>
+                    <input
+                      type="text"
+                      value={newAclTgId}
+                      onChange={e => setNewAclTgId(e.target.value)}
+                      placeholder="Например: 123456789"
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-mono text-xs"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Числовой ID пользователя Telegram (позволяет войти без @username и без номера телефона)
+                    </p>
+                  </div>
+                  <div>
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                     <label className="block font-semibold text-slate-700 mb-1">Telegram @username</label>
                     <input
                       type="text"
@@ -2841,7 +3311,11 @@
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
                       <tr>
                         <th className="p-3">Имя</th>
+<<<<<<< HEAD
+                        <th className="p-3">Telegram / Телефон / ID</th>
+=======
                         <th className="p-3">Telegram / Телефон</th>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                         <th className="p-3">Текущая роль</th>
                         <th className="p-3">Добавлен</th>
                         <th className="p-3 text-right">Управление</th>
@@ -2858,8 +3332,23 @@
                               {lockedOwner && <span className="ml-1.5 text-[10px] text-amber-700 font-extrabold">(Вы • Неоспоримый)</span>}
                             </td>
                             <td className="p-3">
+<<<<<<< HEAD
+                              <div className="flex flex-col gap-0.5">
+                                {u.username && <span className="text-sky-700 font-semibold">@{u.username}</span>}
+                                {u.phone && <span className="text-slate-600 font-mono text-[11px]">{u.phone}</span>}
+                                {u.tgUserId && (
+                                  <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded w-fit">
+                                    ID: {u.tgUserId}
+                                  </span>
+                                )}
+                                {!u.username && !u.phone && !u.tgUserId && (
+                                  <span className="text-slate-400 italic text-[11px]">Данные не указаны</span>
+                                )}
+                              </div>
+=======
                               {u.username && <span className="text-sky-700 font-semibold mr-2">@{u.username}</span>}
                               {u.phone && <span className="text-slate-600">{u.phone}</span>}
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                             </td>
                             <td className="p-3">
                               {lockedOwner ? (
@@ -2912,7 +3401,11 @@
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-bold text-sm text-slate-900">📜 Даталог изменений ролей и данных (Только для Владельца)</h3>
+<<<<<<< HEAD
+                  <p className="text-xs text-slate-500">Полный журнал действий всех пользователей и попыток доступа в систему.</p>
+=======
                   <p className="text-xs text-slate-500">Полный журнал действий всех пользователей и администраторов в системе.</p>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                 </div>
               </div>
 
@@ -2928,6 +3421,49 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
+<<<<<<< HEAD
+                    {auditLogs.map(item => {
+                      const isAuthLog = item.category === 'АВТОРИЗАЦИЯ';
+                      const isDeniedOrReq = isAuthLog && (item.action.includes('ОТКАЗ') || item.action.includes('Запрос доступа'));
+
+                      return (
+                        <tr key={item.id} className={`hover:bg-slate-50/70 ${isDeniedOrReq ? 'bg-amber-50/40' : ''}`}>
+                          <td className="p-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">{item.timestamp}</td>
+                          <td className="p-3 font-bold text-slate-900">
+                            {item.actorName} {item.actorUsername && <span className="text-sky-600 font-normal">(@{item.actorUsername})</span>}
+                          </td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] border ${(ROLES[item.actorRole] || ROLES.user).badge}`}>
+                              {(ROLES[item.actorRole] || ROLES.user).title}
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              isAuthLog
+                                ? (isDeniedOrReq ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200')
+                                : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {item.category}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-800">
+                            <div className="flex items-center justify-between gap-3">
+                              <span>{item.action}</span>
+                              {isDeniedOrReq && (
+                                <button
+                                  onClick={() => handlePrefillAclFromLog(item)}
+                                  className="shrink-0 px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg font-bold text-[10px] transition flex items-center gap-1"
+                                >
+                                  <span>➕</span>
+                                  <span>Добавить доступ</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+=======
                     {auditLogs.map(item => (
                       <tr key={item.id} className="hover:bg-slate-50/70">
                         <td className="p-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">{item.timestamp}</td>
@@ -2943,6 +3479,7 @@
                         <td className="p-3 text-slate-800">{item.action}</td>
                       </tr>
                     ))}
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                   </tbody>
                 </table>
               </div>
