@@ -1,0 +1,5 @@
+# Files to ignore in Clasp
+**/**
+!Code.js
+!appsscript.json
+!index.html
