@@ -103,7 +103,12 @@ def tg_send_message(chat_id: int, text: str, reply_markup: dict = None) -> dict:
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return tg_api_call("sendMessage", payload)
+    res = tg_api_call("sendMessage", payload)
+    if res.get("ok"):
+        print(f"[Telegram] Sent message to chat {chat_id}: {text[:60]}...", flush=True)
+    else:
+        print(f"[Telegram Error] sendMessage failed: {res}", file=sys.stderr)
+    return res
 
 def tg_answer_callback(callback_query_id: str, text: str = ""):
     tg_api_call("answerCallbackQuery", {
