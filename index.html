@@ -564,6 +564,10 @@
       // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
       const [cloudStatus, setCloudStatus] = useState(() => (localStorage.getItem('sm_crm_gas_url') ? 'syncing' : 'not_configured'));
       const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
+      const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+      const [isSendingBackup, setIsSendingBackup] = useState(false);
+      const [copiedBackup, setCopiedBackup] = useState(false);
+      const [showRawJson, setShowRawJson] = useState(false);
 
       const [botInfo, setBotInfo] = useState(null);
       const [botStatus, setBotStatus] = useState('checking');
@@ -822,8 +826,8 @@
         return () => { isCancelled = true; };
       }, [authState.status, gasUrl, gasApiKey]);
 
-      // --- АВАРИЙНЫЙ БЭКАП JSON (FAIL-SAFE JSON EXPORT) ---
-      const downloadJsonBackup = () => {
+      // --- ГЕНЕРАЦИЯ ОБЪЕКТА РЕЗЕРВНОЙ КОПИИ ---
+      const generateBackupData = () => {
         const now = new Date();
         const pad = (n) => String(n).padStart(2, '0');
         const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}`;
@@ -852,6 +856,120 @@
         };
 
         const jsonStr = JSON.stringify(backupData, null, 2);
+        return { filename, jsonStr, backupData };
+      };
+
+      // Открытие адаптированного модального окна резервного копирования (для iOS/Telegram)
+      const openBackupModal = () => {
+        setCopiedBackup(false);
+        setShowRawJson(false);
+        setIsBackupModalOpen(true);
+      };
+
+      // 1. Отправка .json файла документом напрямую в Telegram через Bot API
+      const handleSendBackupToTelegram = async () => {
+        const targetChatId = authState.tgUser?.id || adminChatId;
+        if (!botToken) {
+          showToast('Токен бота не настроен');
+          return;
+        }
+        if (!targetChatId) {
+          showToast('Сначала напишите боту в Telegram, чтобы определился ваш ID');
+          return;
+        }
+        setIsSendingBackup(true);
+        try {
+          const { filename, jsonStr } = generateBackupData();
+          const blob = new Blob([jsonStr], { type: 'application/json' });
+          const formData = new FormData();
+          formData.append('chat_id', targetChatId);
+          formData.append('document', blob, filename);
+          formData.append(
+            'caption',
+            `📦 Резервная копия базы Showroom CRM\n📅 Дата: ${new Date().toLocaleString('ru-RU')}\n🏢 Брендов: ${brandsRef.current.length}\n👥 Доступов: ${aclUsersRef.current.length}\n📜 Записей логов: ${auditLogs.length}`
+          );
+
+          const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (data.ok) {
+            showToast('✅ Файл бэкапа успешно отправлен вам в Telegram!');
+          } else {
+            throw new Error(data.description || 'Ошибка Telegram Bot API');
+          }
+        } catch (e) {
+          console.error('Ошибка отправки бэкапа в Telegram:', e);
+          showToast(`Ошибка: ${e.message || 'Не удалось отправить файл'}`);
+        } finally {
+          setIsSendingBackup(false);
+        }
+      };
+
+      // 2. Нативное системное меню iOS (Share Sheet) для сохранения в «Файлы»
+      const handleShareViaIOS = async () => {
+        const { filename, jsonStr } = generateBackupData();
+        try {
+          if (navigator.share) {
+            const file = new File([jsonStr], filename, { type: 'application/json' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                files: [file],
+                title: filename
+              });
+              showToast('Файл передан в меню iOS!');
+              return;
+            } else {
+              await navigator.share({
+                title: filename,
+                text: jsonStr
+              });
+              showToast('Данные переданы в меню iOS!');
+              return;
+            }
+          }
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            console.warn('Ошибка navigator.share:', err);
+          }
+        }
+        // Если системный Share недоступен — копируем в буфер
+        handleCopyBackupToClipboard();
+      };
+
+      // 3. Быстрое копирование всего JSON в буфер обмена iOS
+      const handleCopyBackupToClipboard = async () => {
+        const { jsonStr } = generateBackupData();
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(jsonStr);
+          } else {
+            const textarea = document.createElement('textarea');
+            textarea.value = jsonStr;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+          }
+          setCopiedBackup(true);
+          showToast('✅ JSON скопирован в буфер обмена!');
+          setTimeout(() => setCopiedBackup(false), 3000);
+        } catch (err) {
+          showToast('Не удалось скопировать в буфер обмена');
+        }
+      };
+
+      // 4. Скачивание файла в браузере (для ПК или внешних браузеров)
+      const handleDirectBrowserDownload = () => {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        if (isIOS) {
+          handleShareViaIOS();
+          return;
+        }
+        const { filename, jsonStr } = generateBackupData();
         const blob = new Blob([jsonStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -861,7 +979,7 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        showToast(`Резервная копия сохранена: ${filename}`);
+        showToast(`Файл скачан: ${filename}`);
       };
 
       // --- ПЕРВИЧНАЯ МИГРАЦИЯ / РУЧНОЙ ФОРС-ПУШ В ТАБЛИЦУ ---
@@ -1659,7 +1777,7 @@
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={downloadJsonBackup}
+                  onClick={openBackupModal}
                   className="px-3 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-semibold"
                 >
                   📥 Бэкап JSON
@@ -1745,7 +1863,7 @@
             <div className="flex items-center gap-2 flex-wrap">
               {isOwner && (
                 <button
-                  onClick={downloadJsonBackup}
+                  onClick={openBackupModal}
                   className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition flex items-center gap-1"
                   title="Скачать резервную копию JSON на устройство"
                 >
@@ -2476,10 +2594,10 @@
                       🧪 Проверить связь
                     </button>
                     <button
-                      onClick={downloadJsonBackup}
+                      onClick={openBackupModal}
                       className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold transition flex items-center gap-1.5"
                     >
-                      <span>📥 Скачать резервную копию JSON</span>
+                      <span>📥 Резервная копия JSON</span>
                     </button>
                   </div>
                 </div>
@@ -2808,10 +2926,10 @@
                   </button>
                   <button
                     type="button"
-                    onClick={downloadJsonBackup}
+                    onClick={openBackupModal}
                     className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold rounded-xl text-xs transition flex items-center justify-center gap-2"
                   >
-                    <span>📥 Скачать резервную копию JSON</span>
+                    <span>📥 Резервная копия JSON</span>
                   </button>
                   <button
                     type="button"
@@ -2819,6 +2937,162 @@
                     className="w-full py-2 px-4 border border-slate-200 hover:bg-slate-100 text-slate-600 font-semibold rounded-xl text-xs transition"
                   >
                     Продолжить работу в локальном кэше
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛЬНОЕ ОКНО РЕЗЕРВНОЙ КОПИИ ДЛЯ iOS & TELEGRAM MINI APP */}
+          {isBackupModalOpen && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[80]">
+              <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 max-w-md w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+                {/* Шапка модалки */}
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center text-xl flex-shrink-0">
+                      📦
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 leading-tight">Резервная копия базы CRM</h3>
+                      <p className="text-[11px] text-slate-500 font-medium">Адаптировано для iPhone & Telegram</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsBackupModalOpen(false)}
+                    className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold transition"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Информационная карточка */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-1.5 text-xs text-slate-700">
+                  <div className="font-semibold text-slate-900 flex items-center justify-between">
+                    <span>Снимок состояния CRM:</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{new Date().toLocaleDateString('ru-RU')}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 text-center">
+                      <div className="text-[10px] text-slate-400">Брендов</div>
+                      <div className="text-sm font-bold text-slate-900">{brands.length}</div>
+                    </div>
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 text-center">
+                      <div className="text-[10px] text-slate-400">Доступов</div>
+                      <div className="text-sm font-bold text-slate-900">{aclUsers.length}</div>
+                    </div>
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 text-center">
+                      <div className="text-[10px] text-slate-400">Логов</div>
+                      <div className="text-sm font-bold text-slate-900">{auditLogs.length}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Основные варианты экспорта для iOS */}
+                <div className="space-y-2 pt-1">
+                  {/* Кнопка 1: Отправка в Telegram */}
+                  <button
+                    type="button"
+                    disabled={isSendingBackup}
+                    onClick={handleSendBackupToTelegram}
+                    className="w-full py-3 px-4 bg-sky-600 hover:bg-sky-500 active:scale-[0.98] text-white font-bold rounded-2xl text-xs transition flex items-center justify-between shadow-sm"
+                  >
+                    <div className="flex items-center gap-2.5 text-left">
+                      <span className="text-base">✈️</span>
+                      <div>
+                        <div>Отправить файл в Telegram</div>
+                        <div className="text-[10px] font-normal text-sky-100">Файл .json придет документом в диалог с ботом</div>
+                      </div>
+                    </div>
+                    <span className="text-xs">{isSendingBackup ? '⏳...' : '→'}</span>
+                  </button>
+
+                  {/* Кнопка 2: Нативное меню "Поделиться" iOS */}
+                  <button
+                    type="button"
+                    onClick={handleShareViaIOS}
+                    className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white font-bold rounded-2xl text-xs transition flex items-center justify-between shadow-sm"
+                  >
+                    <div className="flex items-center gap-2.5 text-left">
+                      <span className="text-base">📱</span>
+                      <div>
+                        <div>Сохранить в «Файлы» (iOS Share)</div>
+                        <div className="text-[10px] font-normal text-slate-300">Открыть системное меню iOS (AirDrop, iCloud, Файлы)</div>
+                      </div>
+                    </div>
+                    <span className="text-xs">→</span>
+                  </button>
+
+                  {/* Кнопка 3: Копирование в буфер обмена */}
+                  <button
+                    type="button"
+                    onClick={handleCopyBackupToClipboard}
+                    className={`w-full py-3 px-4 rounded-2xl text-xs font-bold transition flex items-center justify-between border ${
+                      copiedBackup
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 text-left">
+                      <span className="text-base">{copiedBackup ? '✅' : '📋'}</span>
+                      <div>
+                        <div>{copiedBackup ? 'JSON скопирован в буфер!' : 'Скопировать весь JSON'}</div>
+                        <div className="text-[10px] font-normal text-slate-500">Вставить в «Заметки» или любой мессенджер</div>
+                      </div>
+                    </div>
+                    <span className="text-xs">{copiedBackup ? 'Готово' : 'Копировать'}</span>
+                  </button>
+
+                  {/* Кнопка 4: Прямое скачивание для ПК / внешних браузеров */}
+                  <button
+                    type="button"
+                    onClick={handleDirectBrowserDownload}
+                    className="w-full py-2 px-4 rounded-xl text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition flex items-center justify-center gap-1.5"
+                  >
+                    <span>💾 Скачать файл напрямую (для ПК)</span>
+                  </button>
+                </div>
+
+                {/* Раскрывающийся блок просмотра JSON */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowRawJson(prev => !prev)}
+                    className="w-full text-center text-xs text-slate-500 hover:text-slate-900 font-semibold py-1 flex items-center justify-center gap-1"
+                  >
+                    <span>{showRawJson ? 'Скрыть код JSON' : 'Показать код JSON вручную'}</span>
+                    <span className={`text-[10px] transition-transform ${showRawJson ? 'rotate-180' : ''}`}>▾</span>
+                  </button>
+
+                  {showRawJson && (
+                    <div className="mt-2 space-y-2">
+                      <textarea
+                        readOnly
+                        rows={6}
+                        value={generateBackupData().jsonStr}
+                        className="w-full bg-slate-900 text-sky-300 font-mono text-[10px] p-3 rounded-xl outline-none select-all"
+                        onClick={e => e.target.select()}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCopyBackupToClipboard}
+                        className="w-full py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition"
+                      >
+                        📋 Выделить и скопировать всё
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Кнопка выхода */}
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsBackupModalOpen(false)}
+                    className="w-full py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs transition"
+                  >
+                    Закрыть окно бэкапа
                   </button>
                 </div>
               </div>
