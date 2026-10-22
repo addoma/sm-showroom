@@ -144,7 +144,10 @@
     const DEFAULT_BOT_TOKEN = '8312776596:AAE0LlYuKisLzebdftj2fJaQ5571RSu5CBI';
     const DEFAULT_BOT_USERNAME = 'SM_Brand_CRM_bot';
     const DEFAULT_API_SECRET_KEY = 'SHOWROOM_CRM_SECRET_2026';
+<<<<<<< HEAD
     const DEFAULT_GAS_URL = ''; // URL развернутого скрипта Google Apps Script (https://script.google.com/macros/s/.../exec)
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
     const ROLES = {
       owner: { id: 'owner', title: 'Владелец', badge: 'bg-amber-500 text-slate-950 font-black border-amber-400' },
@@ -173,11 +176,14 @@
       return digits;
     };
 
+<<<<<<< HEAD
     const cleanTgId = (id) => {
       if (!id) return '';
       return String(id).trim();
     };
 
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
     // Проверка, является ли запись или пользователь Неоспоримым Владельцем
     const isImmutableOwner = (username, phone) => {
       const u = cleanUsername(username);
@@ -347,7 +353,10 @@
         name: 'Владелец Шоурума',
         role: 'owner',
         immutable: true,
+<<<<<<< HEAD
         tgUserId: '',
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
         addedAt: 'Системный корневой доступ'
       }
     ];
@@ -374,6 +383,7 @@
         return data;
       },
 
+<<<<<<< HEAD
       async checkAccess(url, apiKey, { tgUserId, username, phone, name }) {
         if (!url) return null;
         return await this.callApi(url, {
@@ -398,6 +408,8 @@
         });
       },
 
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       async getAllData(url, apiKey) {
         if (!url) return null;
         return await this.callApi(url, {
@@ -689,10 +701,17 @@
       });
 
       // --- НАСТРОЙКИ GOOGLE APPS SCRIPT И ОБЛАЧНОЙ СИНХРОНИЗАЦИИ ---
+<<<<<<< HEAD
       const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('sm_crm_gas_url') || DEFAULT_GAS_URL);
       const [gasApiKey, setGasApiKey] = useState(() => localStorage.getItem('sm_crm_gas_key') || DEFAULT_API_SECRET_KEY);
       // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
       const [cloudStatus, setCloudStatus] = useState(() => ((localStorage.getItem('sm_crm_gas_url') || DEFAULT_GAS_URL) ? 'syncing' : 'not_configured'));
+=======
+      const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('sm_crm_gas_url') || '');
+      const [gasApiKey, setGasApiKey] = useState(() => localStorage.getItem('sm_crm_gas_key') || DEFAULT_API_SECRET_KEY);
+      // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
+      const [cloudStatus, setCloudStatus] = useState(() => (localStorage.getItem('sm_crm_gas_url') ? 'syncing' : 'not_configured'));
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
       const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
       const [isSendingBackup, setIsSendingBackup] = useState(false);
@@ -728,16 +747,23 @@
         return () => document.removeEventListener('mousedown', handleClickOutside);
       }, []);
 
+<<<<<<< HEAD
       // Форма добавления нового пользователя/админа и состояния авторизации
       const [newAclTgId, setNewAclTgId] = useState('');
+=======
+      // Форма добавления нового пользователя/админа
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
       const [newAclUsername, setNewAclUsername] = useState('');
       const [newAclPhone, setNewAclPhone] = useState('');
       const [newAclName, setNewAclName] = useState('');
       const [newAclRole, setNewAclRole] = useState('user');
+<<<<<<< HEAD
       const [isCheckingAuth, setIsCheckingAuth] = useState(true);
       const [isRequestingAccess, setIsRequestingAccess] = useState(false);
       const [accessRequestSent, setAccessRequestSent] = useState(false);
       const [detectedContactPhone, setDetectedContactPhone] = useState('');
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
       // Чат-ассистент
       const [commandInput, setCommandInput] = useState('');
@@ -817,6 +843,7 @@
         queueCloudSync(() => CloudStorageService.appendLog(gasUrlRef.current, gasApiKeyRef.current, entry));
       };
 
+<<<<<<< HEAD
       // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP (ZERO-DEADLOCK + CLOUD PRE-AUTH) ---
       const authenticateTelegramSession = useCallback(async (overridePhone = null) => {
         setIsCheckingAuth(true);
@@ -1062,6 +1089,97 @@
         }
         showToast('Данные подставлены в форму добавления доступа');
       };
+=======
+      // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP ПРИ ЗАПУСКЕ ---
+      useEffect(() => {
+        const authenticateTelegramSession = async () => {
+          const tg = window.Telegram?.WebApp;
+          if (tg) {
+            tg.ready();
+            try { tg.expand(); } catch (e) {}
+
+            // Отключение закрытия шторки свайпом вниз при прокрутке внутри Mini App (API 7.7+)
+            if (typeof tg.disableVerticalSwipes === 'function') {
+              try { tg.disableVerticalSwipes(); } catch (e) {}
+            }
+
+            // Защита от случайного закрытия
+            if (typeof tg.enableClosingConfirmation === 'function') {
+              try { tg.enableClosingConfirmation(); } catch (e) {}
+            }
+
+            // Установка цвета фона и шапки для системного статус-бара iOS (соответствует фону CRM #f8fafc)
+            if (typeof tg.setHeaderColor === 'function') {
+              try { tg.setHeaderColor('#f8fafc'); } catch (e) {}
+            }
+            if (typeof tg.setBackgroundColor === 'function') {
+              try { tg.setBackgroundColor('#f8fafc'); } catch (e) {}
+            }
+          }
+
+          const initDataRaw = tg?.initData || '';
+          const unsafeUser = tg?.initDataUnsafe?.user || null;
+
+          if (!tg || !initDataRaw || !unsafeUser) {
+            setAuthState({
+              status: 'denied',
+              reason: 'not_in_telegram',
+              tgUser: null,
+              role: null
+            });
+            return;
+          }
+
+          const isValidSignature = await verifyTelegramWebAppData(initDataRaw, botToken);
+          if (!isValidSignature) {
+            setAuthState({
+              status: 'denied',
+              reason: 'invalid_signature',
+              tgUser: null,
+              role: null
+            });
+            return;
+          }
+
+          const currentUsername = cleanUsername(unsafeUser.username || '');
+          const currentPhone = cleanPhone(unsafeUser.phone_number || '');
+
+          if (isImmutableOwner(currentUsername, currentPhone)) {
+            setAuthState({
+              status: 'authorized',
+              reason: '',
+              tgUser: unsafeUser,
+              role: 'owner'
+            });
+            return;
+          }
+
+          const matchedAcl = aclUsersRef.current.find(u => {
+            const uName = cleanUsername(u.username);
+            const uPhone = cleanPhone(u.phone);
+            return (uName && currentUsername && uName === currentUsername) || (uPhone && currentPhone && uPhone === currentPhone);
+          });
+
+          if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'owner')) {
+            setAuthState({
+              status: 'authorized',
+              reason: '',
+              tgUser: unsafeUser,
+              role: matchedAcl.role
+            });
+          } else {
+            setAuthState({
+              status: 'denied',
+              reason: 'not_in_acl',
+              tgUser: unsafeUser,
+              role: null
+            });
+          }
+        };
+
+        authenticateTelegramSession();
+      }, [botToken, aclUsers]);
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
 
       // --- ПОДДЕРЖКА ДИНАМИЧЕСКИХ РЕЖИМОВ TELEGRAM SDK (FULLSCREEN, FULLSIZE, COMPACT) ---
       useEffect(() => {
@@ -1458,12 +1576,20 @@
         e.preventDefault();
         if (authState.role !== 'owner' && authState.role !== 'admin') return;
 
+<<<<<<< HEAD
         const cleanTg = cleanTgId(newAclTgId);
         const cleanU = cleanUsername(newAclUsername);
         const cleanP = cleanPhone(newAclPhone);
 
         if (!cleanTg && !cleanU && !cleanP) {
           showToast('Укажите Telegram ID, @username или номер телефона');
+=======
+        const cleanU = cleanUsername(newAclUsername);
+        const cleanP = cleanPhone(newAclPhone);
+
+        if (!cleanU && !cleanP) {
+          showToast('Укажите Telegram @username или номер телефона');
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           return;
         }
 
@@ -1474,6 +1600,7 @@
 
         const targetRole = authState.role === 'owner' ? newAclRole : 'user';
 
+<<<<<<< HEAD
         const exists = aclUsers.some(u =>
           (cleanTg && cleanTgId(u.tgUserId) === cleanTg) ||
           (cleanU && cleanUsername(u.username) === cleanU) ||
@@ -1481,15 +1608,26 @@
         );
         if (exists) {
           showToast('Пользователь с таким ID, @username или телефоном уже есть в списке');
+=======
+        const exists = aclUsers.some(u => (cleanU && cleanUsername(u.username) === cleanU) || (cleanP && cleanPhone(u.phone) === cleanP));
+        if (exists) {
+          showToast('Пользователь с таким @username или телефоном уже есть в списке');
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           return;
         }
 
         const newUserObj = {
           id: 'acl-' + Date.now(),
+<<<<<<< HEAD
           tgUserId: cleanTg,
           username: cleanU,
           phone: newAclPhone.trim(),
           name: newAclName.trim() || (cleanU ? `@${cleanU}` : (cleanTg ? `ID: ${cleanTg}` : newAclPhone.trim())),
+=======
+          username: cleanU,
+          phone: newAclPhone.trim(),
+          name: newAclName.trim() || (cleanU ? `@${cleanU}` : newAclPhone.trim()),
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           role: targetRole,
           immutable: false,
           addedAt: new Date().toLocaleString('ru-RU')
@@ -1499,10 +1637,16 @@
         queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, newUserObj, 'create'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
+<<<<<<< HEAD
           `Добавлен участник ${newUserObj.name} (${cleanTg ? 'ID: ' + cleanTg + ' ' : ''}${cleanU ? '@' + cleanU + ' ' : ''}${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
         );
 
         setNewAclTgId('');
+=======
+          `Добавлен участник ${newUserObj.name} (${cleanU ? '@' + cleanU : ''} ${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
+        );
+
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
         setNewAclUsername('');
         setNewAclPhone('');
         setNewAclName('');
@@ -2074,6 +2218,7 @@
       // =========================================================
       // ЭКРАН ПРОВЕРКИ ИЛИ ПОЛНОЙ БЛОКИРОВКИ ("ДОСТУП ОГРАНИЧЕН")
       // =========================================================
+<<<<<<< HEAD
       if (authState.status === 'checking' || isCheckingAuth) {
         return (
           <div
@@ -2087,11 +2232,23 @@
             <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
               Сверяем ваш профиль Telegram с облачной базой данных шоурума
             </p>
+=======
+      if (authState.status === 'checking') {
+        return (
+          <div
+            className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area"
+            style={{ paddingTop: `${topSafeInset}px` }}
+          >
+            <div className="text-slate-500 text-xs font-mono tracking-widest uppercase animate-pulse">
+              Проверка криптографической подписи Telegram API...
+            </div>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
           </div>
         );
       }
 
       if (authState.status !== 'authorized') {
+<<<<<<< HEAD
         const tg = window.Telegram?.WebApp;
         const u = authState.tgUser || tg?.initDataUnsafe?.user || {};
         const uId = cleanTgId(u.id || '');
@@ -2184,6 +2341,20 @@
                   Владелец системы: <span className="text-amber-400 font-bold">@tvoyaddoma</span>
                 </p>
               </div>
+=======
+        return (
+          <div
+            className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area"
+            style={{ paddingTop: `${topSafeInset}px` }}
+          >
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl px-8 py-7 shadow-2xl text-center max-w-xs w-full">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto mb-3 text-xl font-bold">
+                🔒
+              </div>
+              <h1 className="text-base font-bold text-white tracking-tight">
+                Доступ ограничен
+              </h1>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
             </div>
           </div>
         );
@@ -3063,6 +3234,7 @@
 
                 <form onSubmit={handleAddAclUser} className="space-y-3">
                   <div>
+<<<<<<< HEAD
                     <label className="block font-semibold text-slate-700 mb-1">Telegram ID (числовой)</label>
                     <input
                       type="text"
@@ -3076,6 +3248,8 @@
                     </p>
                   </div>
                   <div>
+=======
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                     <label className="block font-semibold text-slate-700 mb-1">Telegram @username</label>
                     <input
                       type="text"
@@ -3137,7 +3311,11 @@
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
                       <tr>
                         <th className="p-3">Имя</th>
+<<<<<<< HEAD
                         <th className="p-3">Telegram / Телефон / ID</th>
+=======
+                        <th className="p-3">Telegram / Телефон</th>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                         <th className="p-3">Текущая роль</th>
                         <th className="p-3">Добавлен</th>
                         <th className="p-3 text-right">Управление</th>
@@ -3154,6 +3332,7 @@
                               {lockedOwner && <span className="ml-1.5 text-[10px] text-amber-700 font-extrabold">(Вы • Неоспоримый)</span>}
                             </td>
                             <td className="p-3">
+<<<<<<< HEAD
                               <div className="flex flex-col gap-0.5">
                                 {u.username && <span className="text-sky-700 font-semibold">@{u.username}</span>}
                                 {u.phone && <span className="text-slate-600 font-mono text-[11px]">{u.phone}</span>}
@@ -3166,6 +3345,10 @@
                                   <span className="text-slate-400 italic text-[11px]">Данные не указаны</span>
                                 )}
                               </div>
+=======
+                              {u.username && <span className="text-sky-700 font-semibold mr-2">@{u.username}</span>}
+                              {u.phone && <span className="text-slate-600">{u.phone}</span>}
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                             </td>
                             <td className="p-3">
                               {lockedOwner ? (
@@ -3218,7 +3401,11 @@
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-bold text-sm text-slate-900">📜 Даталог изменений ролей и данных (Только для Владельца)</h3>
+<<<<<<< HEAD
                   <p className="text-xs text-slate-500">Полный журнал действий всех пользователей и попыток доступа в систему.</p>
+=======
+                  <p className="text-xs text-slate-500">Полный журнал действий всех пользователей и администраторов в системе.</p>
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                 </div>
               </div>
 
@@ -3234,6 +3421,7 @@
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
+<<<<<<< HEAD
                     {auditLogs.map(item => {
                       const isAuthLog = item.category === 'АВТОРИЗАЦИЯ';
                       const isDeniedOrReq = isAuthLog && (item.action.includes('ОТКАЗ') || item.action.includes('Запрос доступа'));
@@ -3275,6 +3463,23 @@
                         </tr>
                       );
                     })}
+=======
+                    {auditLogs.map(item => (
+                      <tr key={item.id} className="hover:bg-slate-50/70">
+                        <td className="p-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">{item.timestamp}</td>
+                        <td className="p-3 font-bold text-slate-900">
+                          {item.actorName} {item.actorUsername && <span className="text-sky-600 font-normal">(@{item.actorUsername})</span>}
+                        </td>
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] border ${(ROLES[item.actorRole] || ROLES.user).badge}`}>
+                            {(ROLES[item.actorRole] || ROLES.user).title}
+                          </span>
+                        </td>
+                        <td className="p-3 font-semibold text-slate-700 text-[11px]">{item.category}</td>
+                        <td className="p-3 text-slate-800">{item.action}</td>
+                      </tr>
+                    ))}
+>>>>>>> 142337344f68af0aedb00d4768343000f60f1255
                   </tbody>
                 </table>
               </div>
