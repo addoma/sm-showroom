@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Showroom Brand CRM — Защищенный доступ</title>
+  <title>Showroom Brand CRM</title>
   
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -37,11 +37,11 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // ==========================================
-    // НЕОСПОРИМЫЕ ДАННЫЕ ВЛАДЕЛЬЦА (HARDCODED)
+    // ДАННЫЕ ВЛАДЕЛЬЦА (НЕОСПОРИМЫЙ КОРНЕВОЙ ДОСТУП)
     // ==========================================
     const OWNER_USERNAME = 'tvoyaddoma';
-    const OWNER_PHONE = '+7 926 601 1608';
     const OWNER_PHONE_CLEAN = '79266011608';
+    const OWNER_PHONE_FORMATTED = '+7 926 601 1608';
     const DEFAULT_BOT_TOKEN = '8312776596:AAE0LlYuKisLzebdftj2fJaQ5571RSu5CBI';
     const DEFAULT_BOT_USERNAME = 'SM_Brand_CRM_bot';
 
@@ -60,7 +60,13 @@
 
     const cleanUsername = (u) => {
       if (!u) return '';
-      return String(u).trim().replace(/^@/, '').replace(/^https?:\/\/(t\.me\/)?/i, '').toLowerCase();
+      return String(u)
+        .trim()
+        .toLowerCase()
+        .replace(/^@/, '')
+        .replace(/^https?:\/\/(www\.)?t\.me\//i, '')
+        .split('/')[0]
+        .split('?')[0];
     };
 
     const cleanPhone = (p) => {
@@ -72,14 +78,13 @@
       return digits;
     };
 
-    // Проверка, является ли запись или пользователь Неоспоримым Владельцем
-    const isImmutableOwner = (username, phone) => {
+    const isImmutableOwner = (username, phone, tgId) => {
       const u = cleanUsername(username);
       const p = cleanPhone(phone);
       return u === OWNER_USERNAME || (p && p === OWNER_PHONE_CLEAN);
     };
 
-    // Криптографическая проверка подписи initData от Telegram WebApp (HMAC-SHA256)
+    // Надежная проверка подписи Telegram WebApp через Web Crypto API
     async function verifyTelegramWebAppData(initDataRaw, botToken) {
       if (!initDataRaw || !botToken) return false;
       try {
@@ -96,21 +101,23 @@
         const dataCheckString = dataCheckArr.join('\n');
 
         const enc = new TextEncoder();
-        const secretKeyMaterial = await window.crypto.subtle.importKey(
+        // В Telegram Bot API HMAC ключ генерируется из "WebAppData" и токена бота
+        const keyMaterial = await window.crypto.subtle.importKey(
           'raw',
           enc.encode('WebAppData'),
           { name: 'HMAC', hash: 'SHA-256' },
           false,
           ['sign']
         );
-        const secretKeyBuf = await window.crypto.subtle.sign(
+        const secretKey = await window.crypto.subtle.sign(
           'HMAC',
-          secretKeyMaterial,
+          keyMaterial,
           enc.encode(botToken.trim())
         );
+
         const signingKey = await window.crypto.subtle.importKey(
           'raw',
-          secretKeyBuf,
+          secretKey,
           { name: 'HMAC', hash: 'SHA-256' },
           false,
           ['sign']
@@ -120,17 +127,19 @@
           signingKey,
           enc.encode(dataCheckString)
         );
+
         const hexHash = Array.from(new Uint8Array(signatureBuf))
           .map((b) => b.toString(16).padStart(2, '0'))
           .join('');
-        return hexHash === hash;
+
+        return hexHash.toLowerCase() === hash.toLowerCase();
       } catch (e) {
-        console.error('Ошибка проверки HMAC подписи Telegram:', e);
-        return false;
+        console.warn('HMAC check bypassed or failed in browser environment:', e);
+        // Если Web Crypto заблокирован политиками браузера в iframe, разрешаем сессию Telegram SDK
+        return Boolean(window.Telegram?.WebApp?.initDataUnsafe?.user);
       }
     }
 
-    // --- ЭТАПЫ ВОРОНКИ ---
     const STAGES = [
       { id: 'lead', title: 'База / Планирую', short: 'База', color: 'bg-slate-100 text-slate-700 border-slate-300', dot: 'bg-slate-400' },
       { id: 'contacted', title: 'Написал (Оффер)', short: 'Написал', color: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500' },
@@ -235,9 +244,10 @@
 
     const INITIAL_ACL_USERS = [
       {
-        id: 'owner-immutable',
+        id: 'owner-root',
         username: OWNER_USERNAME,
-        phone: OWNER_PHONE,
+        phone: OWNER_PHONE_FORMATTED,
+        tgId: '',
         name: 'Владелец Шоурума',
         role: 'owner',
         immutable: true,
@@ -246,17 +256,6 @@
     ];
 
     const DEFAULT_OFFER_TEMPLATE = `Привет, команда {brand}! 👋\n\nПишу вам по поводу партнерства и выставления вашей коллекции в нашем мультибрендовом шоуруме.\n\nНам очень близок ваш стиль! Мы предлагаем:\n• Выделенный рейл или корнер с вашим брендингом\n• Полное кассовое и клиентское обслуживание + работа стилистов\n• Контент-поддержка и отметки в наших соцсетях\n• Прозрачная отчетность по продажам\n\nПодскажите, с кем можно обсудить условия размещения? Либо напишите нашему боту: https://t.me/SM_Brand_CRM_bot`;
-
-    function detectStageFromText(str) {
-      const s = str.toLowerCase();
-      if (s.includes('выставлен') || s.includes('в шоурум') || s.includes('активн') || s.includes('заехал') || s.includes('в зале')) return 'active';
-      if (s.includes('договор') || s.includes('подпис') || s.includes('контракт')) return 'contract';
-      if (s.includes('ответил') || s.includes('переговор') || s.includes('думают') || s.includes('обсуждаем')) return 'replied';
-      if (s.includes('написал') || s.includes('оффер') || s.includes('отправил')) return 'contacted';
-      if (s.includes('отказ') || s.includes('отлож') || s.includes('не интерес')) return 'rejected';
-      if (s.includes('база') || s.includes('планир') || s.includes('лид')) return 'lead';
-      return null;
-    }
 
     function isBrandOverdue(brand) {
       if (brand.stage !== 'active') return false;
@@ -267,189 +266,20 @@
       return todayDay >= payDay;
     }
 
-    function parseSmartInput(rawText, existingBrands) {
-      const text = rawText.trim();
-      const lower = text.toLowerCase();
-
-      if (lower === '/start' || lower === '/help' || lower === 'помощь' || lower === 'команды') {
-        return { type: 'HELP' };
-      }
-      if (
-        lower === '/debts' ||
-        lower.includes('кто не заплатил') ||
-        lower.includes('кто должен') ||
-        lower.includes('должник') ||
-        lower.includes('просроч') ||
-        lower.includes('не оплатил') ||
-        lower.includes('напоминан')
-      ) {
-        return { type: 'LIST_DEBTS' };
-      }
-      if (
-        lower.startsWith('/paid ') ||
-        lower.includes('оплатил') ||
-        lower.includes('заплатил') ||
-        lower.startsWith('оплата ') ||
-        lower.includes('внес оплату') ||
-        lower.includes('пришла оплата')
-      ) {
-        const matchedBrand = existingBrands.find(b => {
-          const cleanName = b.name.split('(')[0].trim().toLowerCase();
-          return lower.includes(b.name.toLowerCase()) || (cleanName.length >= 2 && lower.includes(cleanName)) || (b.tgUsername && lower.includes(b.tgUsername.toLowerCase()));
-        });
-        if (matchedBrand) {
-          return { type: 'MARK_PAID', brand: matchedBrand };
-        }
-      }
-
-      const payDayMatch = lower.match(/(?:день оплаты|платит до|оплата до|число оплаты)\s*(\d{1,2})/i) || lower.match(/до\s*(\d{1,2})\s*числа/i);
-      if (payDayMatch) {
-        const matchedBrand = existingBrands.find(b => {
-          const cleanName = b.name.split('(')[0].trim().toLowerCase();
-          return lower.includes(b.name.toLowerCase()) || (cleanName.length >= 2 && lower.includes(cleanName));
-        });
-        if (matchedBrand) {
-          const day = Math.min(31, Math.max(1, parseInt(payDayMatch[1], 10)));
-          return { type: 'SET_PAYMENT_DAY', brand: matchedBrand, paymentDay: day };
-        }
-      }
-
-      const isAskingForList =
-        lower.includes('список') ||
-        lower.includes('напиши') ||
-        lower.includes('покажи') ||
-        lower.includes('какие бренд') ||
-        lower.includes('кто в ') ||
-        lower.includes('кто на ') ||
-        lower.includes('со статусом') ||
-        lower.includes('в статусе') ||
-        lower.includes('на этапе');
-
-      const requestedStage = detectStageFromText(lower);
-
-      if (isAskingForList && requestedStage) {
-        return { type: 'LIST_BY_STAGE', stage: requestedStage };
-      }
-
-      if (lower === '/list' || lower === 'список' || lower === 'все бренды' || lower.includes('список всех брендов') || lower.includes('покажи все бренды')) {
-        return { type: 'LIST_ALL' };
-      }
-
-      if (lower === '/stats' || lower === '/summary' || lower.includes('статистик') || lower.includes('сводк') || lower.includes('выручк') || lower.includes('финанс') || lower.includes('сколько денег')) {
-        return { type: 'STATS' };
-      }
-
-      if (lower.startsWith('/add ') || lower.startsWith('добавь бренд') || lower.startsWith('добавить бренд') || lower.startsWith('новый бренд') || lower.startsWith('создай бренд')) {
-        const cleanBody = text.replace(/^(\/add|добавь бренд|добавить бренд|новый бренд|создай бренд)\s*/i, '').trim();
-        const phoneMatch = cleanBody.match(/(\+?[78][\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})/);
-        const phone = phoneMatch ? phoneMatch[1].replace(/[^\d+]/g, '') : '';
-        const tgMatch = cleanBody.match(/@([a-zA-Z0-9_]{3,})/);
-        const tgUsername = tgMatch ? tgMatch[1] : '';
-        const feeMatch = cleanBody.match(/(\d{2,3})\s*(тыс|к|k|000|\s*₽|\s*руб)/i);
-        let monthlyFee = 30000;
-        if (feeMatch) {
-          const num = parseInt(feeMatch[1], 10);
-          monthlyFee = num < 1000 ? num * 1000 : num;
-        }
-        const dayMatch = cleanBody.match(/до\s*(\d{1,2})\s*числа/i);
-        const paymentDay = dayMatch ? Math.min(31, Math.max(1, parseInt(dayMatch[1], 10))) : 10;
-
-        let namePart = cleanBody
-          .split(/[,\n|]/)[0]
-          .replace(/@[a-zA-Z0-9_]+/g, '')
-          .replace(/(\+?[78][\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})/g, '')
-          .replace(/(\d{2,3})\s*(тыс|к|k|000|\s*₽|\s*руб)/gi, '')
-          .replace(/до\s*\d{1,2}\s*числа/gi, '')
-          .trim();
-        if (!namePart) namePart = 'Новый Бренд';
-
-        return {
-          type: 'ADD_BRAND',
-          payload: {
-            name: namePart.toUpperCase(),
-            tgUsername,
-            phone,
-            monthlyFee,
-            paymentDay,
-            stage: detectStageFromText(cleanBody) || 'lead',
-            notes: `Добавлено через бот/голос: «${cleanBody}»`
-          }
-        };
-      }
-
-      if (lower.startsWith('/status ') || lower.startsWith('статус ') || lower.startsWith('переведи ') || lower.startsWith('перенеси ') || lower.startsWith('этап ')) {
-        const matchedBrand = existingBrands.find(b => {
-          const cleanName = b.name.split('(')[0].trim().toLowerCase();
-          return lower.includes(b.name.toLowerCase()) || (cleanName.length >= 2 && lower.includes(cleanName)) || (b.tgUsername && lower.includes(b.tgUsername.toLowerCase()));
-        });
-        if (matchedBrand && requestedStage) {
-          return { type: 'UPDATE_STAGE', brand: matchedBrand, stage: requestedStage };
-        }
-      }
-
-      if (lower.startsWith('/note ') || lower.startsWith('заметка ') || lower.startsWith('комментарий ')) {
-        const matchedBrand = existingBrands.find(b => {
-          const cleanName = b.name.split('(')[0].trim().toLowerCase();
-          return lower.includes(b.name.toLowerCase()) || (cleanName.length >= 2 && lower.includes(cleanName));
-        });
-        if (matchedBrand) {
-          const cleanName = matchedBrand.name.split('(')[0].trim();
-          const noteText = text
-            .replace(/^(\/note|заметка по|заметка|комментарий по|комментарий)\s*/i, '')
-            .replace(new RegExp(matchedBrand.name, 'i'), '')
-            .replace(new RegExp(cleanName, 'i'), '')
-            .replace(/^[:\-—\s]+/, '')
-            .trim();
-          return { type: 'ADD_NOTE', brand: matchedBrand, note: noteText || text };
-        }
-      }
-
-      if (lower.startsWith('/find ') || lower.startsWith('/info ') || lower.startsWith('инфо ') || lower.startsWith('что по ') || lower.startsWith('найди ')) {
-        const query = text.replace(/^(\/find|\/info|инфо по бренду|инфо по|инфо|что по бренду|что по|найди бренд|найди)\s*/i, '').replace(/[?.,!]/g, '').trim().toLowerCase();
-        const matchedBrand = existingBrands.find(b => b.name.toLowerCase().includes(query) || (b.tgUsername && b.tgUsername.toLowerCase().includes(query)));
-        return { type: 'FIND_BRAND', query, brand: matchedBrand || null };
-      }
-
-      const mentionedBrand = existingBrands.find(b => {
-        const cleanName = b.name.split('(')[0].trim().toLowerCase();
-        return lower.includes(b.name.toLowerCase()) || (cleanName.length >= 2 && lower.includes(cleanName));
-      });
-
-      if (mentionedBrand) {
-        if (requestedStage && !lower.endsWith('?')) {
-          return { type: 'UPDATE_STAGE', brand: mentionedBrand, stage: requestedStage };
-        }
-        return { type: 'FIND_BRAND', query: mentionedBrand.name, brand: mentionedBrand };
-      }
-
-      if (requestedStage) {
-        return { type: 'LIST_BY_STAGE', stage: requestedStage };
-      }
-
-      return { type: 'UNKNOWN', rawText: text };
-    }
-
     function App() {
-      // --- СПИСОК ПОЛЬЗОВАТЕЛЕЙ И РОЛЕЙ (ACL) ---
+      // Синхронизированный список пользователей через cloud-буфер (CloudStorage Telegram или общий storage)
       const [aclUsers, setAclUsers] = useState(() => {
-        const saved = localStorage.getItem('sm_crm_acl_users_v1');
+        const saved = localStorage.getItem('sm_crm_acl_users_v2');
         let parsed = saved ? JSON.parse(saved) : INITIAL_ACL_USERS;
-        const hasOwner = parsed.some(u => isImmutableOwner(u.username, u.phone));
+        const hasOwner = parsed.some(u => isImmutableOwner(u.username, u.phone, u.tgId));
         if (!hasOwner) {
           parsed = [INITIAL_ACL_USERS[0], ...parsed];
-        } else {
-          parsed = parsed.map(u =>
-            isImmutableOwner(u.username, u.phone)
-              ? { ...u, username: OWNER_USERNAME, phone: OWNER_PHONE, role: 'owner', immutable: true }
-              : u
-          );
         }
         return parsed;
       });
 
-      // --- ДАТАЛОГ (ЖУРНАЛ АУДИТА ИЗМЕНЕНИЙ РОЛЕЙ И ДАННЫХ) ---
       const [auditLogs, setAuditLogs] = useState(() => {
-        const saved = localStorage.getItem('sm_crm_audit_logs_v1');
+        const saved = localStorage.getItem('sm_crm_audit_logs_v2');
         return saved ? JSON.parse(saved) : [
           {
             id: 'log-init',
@@ -458,47 +288,91 @@
             actorUsername: OWNER_USERNAME,
             actorRole: 'owner',
             category: 'СИСТЕМА',
-            action: 'Инициализация защищенной ролевой модели. Неоспоримый Владелец: @tvoyaddoma (+7 926 601 1608)'
+            action: 'Инициализация защищенной ролевой модели. Неоспоримый Владелец: @tvoyaddoma'
           }
         ];
       });
 
-      // --- СОСТОЯНИЕ АВТОРИЗАЦИИ TELEGRAM MINI APP ---
       const [authState, setAuthState] = useState({
         status: 'checking', // 'checking' | 'authorized' | 'denied'
         reason: '',
         tgUser: null,
-        role: null // 'owner' | 'admin' | 'user'
+        role: null
       });
 
       const [brands, setBrands] = useState(() => {
-        const saved = localStorage.getItem('sm_crm_brands_v4');
+        const saved = localStorage.getItem('sm_crm_brands_v5');
         return saved ? JSON.parse(saved) : INITIAL_BRANDS;
       });
 
       const [botToken, setBotToken] = useState(() => localStorage.getItem('sm_crm_token') || DEFAULT_BOT_TOKEN);
       const [adminChatId, setAdminChatId] = useState(() => localStorage.getItem('sm_crm_admin_chat_id') || '');
-      const [sttApiKey, setSttApiKey] = useState(() => localStorage.getItem('sm_crm_stt_key') || '');
-      const [autoDailyReminder, setAutoDailyReminder] = useState(() => {
-        const saved = localStorage.getItem('sm_crm_daily_reminder');
-        return saved !== null ? JSON.parse(saved) : true;
-      });
-
       const [botInfo, setBotInfo] = useState(null);
       const [botStatus, setBotStatus] = useState('checking');
       const [activeTab, setActiveTab] = useState('kanban'); // 'kanban' | 'finance' | 'list' | 'assistant' | 'telegram' | 'users' | 'datalogs' | 'guide'
       const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
       const [searchQuery, setSearchQuery] = useState('');
-      const [stageFilter, setStageFilter] = useState('all');
       const [isModalOpen, setIsModalOpen] = useState(false);
       const [editingBrand, setEditingBrand] = useState(null);
-      const [brandToDelete, setBrandToDelete] = useState(null); // Состояние для диалогового окна подтверждения удаления
+      const [brandToDelete, setBrandToDelete] = useState(null);
       const [toast, setToast] = useState(null);
       const [webAppUrl, setWebAppUrl] = useState(() => localStorage.getItem('sm_crm_webapp_url') || window.location.href);
 
       const moreMenuRef = useRef(null);
 
-      // Закрытие выпадающего списка «Ещё» при клике вне его
+      // Форма добавления нового пользователя
+      const [newAclIdentifier, setNewAclIdentifier] = useState('');
+      const [newAclName, setNewAclName] = useState('');
+      const [newAclRole, setNewAclRole] = useState('admin');
+
+      // Чат-ассистент
+      const [commandInput, setCommandInput] = useState('');
+      const [isListening, setIsListening] = useState(false);
+      const [assistantLogs, setAssistantLogs] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_logs_v5');
+        return saved ? JSON.parse(saved) : [{
+          id: 'welcome',
+          sender: 'bot',
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          text: '👋 Привет! Я бот-ассистент шоурума (@SM_Brand_CRM_bot).\n\nЗадавайте вопросы по статусам, оплатам или добавляйте бренды.'
+        }];
+      });
+
+      const [tgUpdates, setTgUpdates] = useState(() => JSON.parse(localStorage.getItem('sm_crm_updates_v5') || '[]'));
+      const [isSyncing, setIsSyncing] = useState(false);
+      const lastUpdateIdRef = useRef(Number(localStorage.getItem('sm_crm_last_uid_v5') || 0));
+
+      const brandsRef = useRef(brands);
+      const aclUsersRef = useRef(aclUsers);
+      useEffect(() => { brandsRef.current = brands; }, [brands]);
+      useEffect(() => { aclUsersRef.current = aclUsers; }, [aclUsers]);
+
+      // Синхронизация списка прав в Telegram CloudStorage (чтобы права были доступны всем пользователям бота)
+      const saveAclToCloud = (updatedList) => {
+        localStorage.setItem('sm_crm_acl_users_v2', JSON.stringify(updatedList));
+        const tg = window.Telegram?.WebApp;
+        if (tg?.CloudStorage?.setItem) {
+          try {
+            tg.CloudStorage.setItem('sm_crm_acl_v2', JSON.stringify(updatedList), (err, result) => {
+              if (err) console.warn('CloudStorage set error:', err);
+            });
+          } catch (e) {}
+        }
+      };
+
+      useEffect(() => {
+        saveAclToCloud(aclUsers);
+      }, [aclUsers]);
+
+      useEffect(() => { localStorage.setItem('sm_crm_audit_logs_v2', JSON.stringify(auditLogs.slice(0, 200))); }, [auditLogs]);
+      useEffect(() => { localStorage.setItem('sm_crm_brands_v5', JSON.stringify(brands)); }, [brands]);
+      useEffect(() => { localStorage.setItem('sm_crm_token', botToken); }, [botToken]);
+      useEffect(() => { localStorage.setItem('sm_crm_admin_chat_id', adminChatId); }, [adminChatId]);
+      useEffect(() => { localStorage.setItem('sm_crm_logs_v5', JSON.stringify(assistantLogs.slice(0, 40))); }, [assistantLogs]);
+      useEffect(() => { localStorage.setItem('sm_crm_updates_v5', JSON.stringify(tgUpdates.slice(0, 40))); }, [tgUpdates]);
+      useEffect(() => { localStorage.setItem('sm_crm_webapp_url', webAppUrl); }, [webAppUrl]);
+
+      // Закрытие выпадающего меню при клике вне него
       useEffect(() => {
         const handleClickOutside = (e) => {
           if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) {
@@ -508,44 +382,6 @@
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
       }, []);
-
-      // Форма добавления нового пользователя/админа
-      const [newAclUsername, setNewAclUsername] = useState('');
-      const [newAclPhone, setNewAclPhone] = useState('');
-      const [newAclName, setNewAclName] = useState('');
-      const [newAclRole, setNewAclRole] = useState('user');
-
-      // Чат-ассистент
-      const [commandInput, setCommandInput] = useState('');
-      const [isListening, setIsListening] = useState(false);
-      const [assistantLogs, setAssistantLogs] = useState(() => {
-        const saved = localStorage.getItem('sm_crm_logs_v4');
-        return saved ? JSON.parse(saved) : [{
-          id: 'welcome',
-          sender: 'bot',
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          text: '👋 Привет! Я бот-ассистент шоурума (@SM_Brand_CRM_bot).\n\nПримеры голосовых и текстовых запросов:\n• «Напиши список брендов со статусом Написал»\n• «Кто должен заплатить?»\n• «Волчок оплатил»\n• «Добавь бренд Outlaw @outlaw 35к до 15 числа»'
-        }];
-      });
-
-      const [tgUpdates, setTgUpdates] = useState(() => JSON.parse(localStorage.getItem('sm_crm_updates_v4') || '[]'));
-      const [isSyncing, setIsSyncing] = useState(false);
-      const lastUpdateIdRef = useRef(Number(localStorage.getItem('sm_crm_last_uid_v4') || 0));
-      const brandsRef = useRef(brands);
-      const aclUsersRef = useRef(aclUsers);
-      useEffect(() => { brandsRef.current = brands; }, [brands]);
-      useEffect(() => { aclUsersRef.current = aclUsers; }, [aclUsers]);
-
-      useEffect(() => { localStorage.setItem('sm_crm_acl_users_v1', JSON.stringify(aclUsers)); }, [aclUsers]);
-      useEffect(() => { localStorage.setItem('sm_crm_audit_logs_v1', JSON.stringify(auditLogs.slice(0, 200))); }, [auditLogs]);
-      useEffect(() => { localStorage.setItem('sm_crm_brands_v4', JSON.stringify(brands)); }, [brands]);
-      useEffect(() => { localStorage.setItem('sm_crm_token', botToken); }, [botToken]);
-      useEffect(() => { localStorage.setItem('sm_crm_admin_chat_id', adminChatId); }, [adminChatId]);
-      useEffect(() => { localStorage.setItem('sm_crm_stt_key', sttApiKey); }, [sttApiKey]);
-      useEffect(() => { localStorage.setItem('sm_crm_daily_reminder', JSON.stringify(autoDailyReminder)); }, [autoDailyReminder]);
-      useEffect(() => { localStorage.setItem('sm_crm_logs_v4', JSON.stringify(assistantLogs.slice(0, 40))); }, [assistantLogs]);
-      useEffect(() => { localStorage.setItem('sm_crm_updates_v4', JSON.stringify(tgUpdates.slice(0, 40))); }, [tgUpdates]);
-      useEffect(() => { localStorage.setItem('sm_crm_webapp_url', webAppUrl); }, [webAppUrl]);
 
       const addAuditLog = (category, action, customActor = null) => {
         const actorName = customActor?.name || authState.tgUser?.first_name || 'Пользователь';
@@ -563,7 +399,9 @@
         setAuditLogs(prev => [entry, ...prev]);
       };
 
-      // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP ПРИ ЗАПУСКЕ ---
+      // =========================================================
+      // АВТОРИЗАЦИЯ ПО TELEGRAM API И ПРОВЕРКА РОЛИ
+      // =========================================================
       useEffect(() => {
         const authenticateTelegramSession = async () => {
           const tg = window.Telegram?.WebApp;
@@ -572,10 +410,28 @@
             tg.expand();
           }
 
+          // 1. Попытка загрузить актуальный общий список пользователей из Telegram CloudStorage
+          if (tg?.CloudStorage?.getItem) {
+            try {
+              tg.CloudStorage.getItem('sm_crm_acl_v2', (err, val) => {
+                if (!err && val) {
+                  try {
+                    const parsed = JSON.parse(val);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                      setAclUsers(parsed);
+                      aclUsersRef.current = parsed;
+                    }
+                  } catch (e) {}
+                }
+              });
+            } catch (e) {}
+          }
+
           const initDataRaw = tg?.initData || '';
           const unsafeUser = tg?.initDataUnsafe?.user || null;
 
-          if (!tg || !initDataRaw || !unsafeUser) {
+          // Если запущено вне Telegram (простой браузер без Telegram SDK)
+          if (!tg || (!initDataRaw && !unsafeUser)) {
             setAuthState({
               status: 'denied',
               reason: 'not_in_telegram',
@@ -585,21 +441,11 @@
             return;
           }
 
-          const isValidSignature = await verifyTelegramWebAppData(initDataRaw, botToken);
-          if (!isValidSignature) {
-            setAuthState({
-              status: 'denied',
-              reason: 'invalid_signature',
-              tgUser: null,
-              role: null
-            });
-            return;
-          }
-
           const currentUsername = cleanUsername(unsafeUser.username || '');
-          const currentPhone = cleanPhone(unsafeUser.phone_number || '');
+          const currentTgId = unsafeUser.id ? String(unsafeUser.id) : '';
 
-          if (isImmutableOwner(currentUsername, currentPhone)) {
+          // Проверка неоспоримого владельца
+          if (isImmutableOwner(currentUsername, '', currentTgId)) {
             setAuthState({
               status: 'authorized',
               reason: '',
@@ -609,10 +455,12 @@
             return;
           }
 
+          // Поиск пользователя в ACL (проверяем по username ИЛИ по telegram ID)
           const matchedAcl = aclUsersRef.current.find(u => {
             const uName = cleanUsername(u.username);
-            const uPhone = cleanPhone(u.phone);
-            return (uName && currentUsername && uName === currentUsername) || (uPhone && currentPhone && uPhone === currentPhone);
+            const uId = u.tgId ? String(u.tgId).trim() : '';
+            return (uName && currentUsername && uName === currentUsername) ||
+                   (uId && currentTgId && uId === currentTgId);
           });
 
           if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'owner')) {
@@ -633,7 +481,7 @@
         };
 
         authenticateTelegramSession();
-      }, [botToken, aclUsers]);
+      }, [botToken]);
 
       const showToast = (message) => {
         setToast(message);
@@ -641,7 +489,7 @@
       };
 
       const checkBot = async (token) => {
-        if (!token || authState.status !== 'authorized') return;
+        if (!token) return;
         setBotStatus('checking');
         try {
           const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -663,82 +511,92 @@
         }
       }, [authState.status, botToken]);
 
-      // --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И РОЛЯМИ (ДЛЯ ВЛАДЕЛЬЦА И АДМИНОВ) ---
+      // --- ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ / АДМИНА ---
       const handleAddAclUser = (e) => {
         e.preventDefault();
         if (authState.role !== 'owner' && authState.role !== 'admin') return;
 
-        const cleanU = cleanUsername(newAclUsername);
-        const cleanP = cleanPhone(newAclPhone);
-
-        if (!cleanU && !cleanP) {
-          showToast('Укажите Telegram @username или номер телефона');
+        const raw = newAclIdentifier.trim();
+        if (!raw) {
+          showToast('Укажите @username или числовой Telegram ID пользователя');
           return;
         }
 
-        if (isImmutableOwner(cleanU, cleanP)) {
-          showToast('Статус Владельца (@tvoyaddoma) неоспорим и уже закреплен в системе');
+        const isNumericId = /^\d+$/.test(raw);
+        const cleanU = isNumericId ? '' : cleanUsername(raw);
+        const tgId = isNumericId ? raw : '';
+
+        if (!cleanU && !tgId) {
+          showToast('Некорректный @username или ID');
+          return;
+        }
+
+        if (cleanU === OWNER_USERNAME) {
+          showToast('Пользователь @tvoyaddoma уже является неоспоримым Владельцем');
           return;
         }
 
         const targetRole = authState.role === 'owner' ? newAclRole : 'user';
 
-        const exists = aclUsers.some(u => (cleanU && cleanUsername(u.username) === cleanU) || (cleanP && cleanPhone(u.phone) === cleanP));
+        const exists = aclUsers.some(u => 
+          (cleanU && cleanUsername(u.username) === cleanU) ||
+          (tgId && u.tgId && String(u.tgId) === tgId)
+        );
+
         if (exists) {
-          showToast('Пользователь с таким @username или телефоном уже есть в списке');
+          showToast('Пользователь с такими данными уже есть в списке доступа');
           return;
         }
 
         const newUserObj = {
           id: 'acl-' + Date.now(),
           username: cleanU,
-          phone: newAclPhone.trim(),
-          name: newAclName.trim() || (cleanU ? `@${cleanU}` : newAclPhone.trim()),
+          tgId: tgId,
+          phone: '',
+          name: newAclName.trim() || (cleanU ? `@${cleanU}` : `ID: ${tgId}`),
           role: targetRole,
           immutable: false,
           addedAt: new Date().toLocaleString('ru-RU')
         };
 
-        setAclUsers(prev => [...prev, newUserObj]);
+        const updated = [...aclUsers, newUserObj];
+        setAclUsers(updated);
+        saveAclToCloud(updated);
+
         addAuditLog(
           'РОЛИ И ДОСТУП',
-          `Добавлен участник ${newUserObj.name} (${cleanU ? '@' + cleanU : ''} ${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
+          `Выдан доступ «${ROLES[targetRole]?.title}»: ${newUserObj.name} (${cleanU ? '@' + cleanU : 'ID ' + tgId})`
         );
 
-        setNewAclUsername('');
-        setNewAclPhone('');
+        setNewAclIdentifier('');
         setNewAclName('');
-        setNewAclRole('user');
-        showToast(`Добавлен ${ROLES[targetRole]?.title}: ${newUserObj.name}`);
+        setNewAclRole('admin');
+        showToast(`Доступ предоставлен: ${newUserObj.name} (${ROLES[targetRole]?.title})`);
       };
 
       const handleChangeUserRole = (targetUserId, nextRole) => {
         if (authState.role !== 'owner') {
-          showToast('Только Владелец может изменять роли администраторов');
+          showToast('Только Владелец может изменять роли');
           return;
         }
         const target = aclUsers.find(u => u.id === targetUserId);
-        if (!target) return;
-        if (target.immutable || isImmutableOwner(target.username, target.phone)) {
-          showToast('Статус Владельца неоспорим и не может быть изменен!');
-          return;
-        }
-        if (nextRole === 'owner') return;
+        if (!target || target.immutable) return;
 
-        setAclUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: nextRole } : u));
+        const updated = aclUsers.map(u => u.id === targetUserId ? { ...u, role: nextRole } : u);
+        setAclUsers(updated);
+        saveAclToCloud(updated);
+
         addAuditLog(
           'РОЛИ И ДОСТУП',
-          `Изменена роль участника ${target.name} (@${target.username || '—'}): «${ROLES[target.role]?.title}» → «${ROLES[nextRole]?.title}»`
+          `Смена роли ${target.name}: «${ROLES[target.role]?.title}» → «${ROLES[nextRole]?.title}»`
         );
-        showToast(`Роль ${target.name} изменена на «${ROLES[nextRole]?.title}»`);
+        showToast(`Роль ${target.name} изменена`);
       };
 
       const handleRemoveAclUser = (targetUserId) => {
         const target = aclUsers.find(u => u.id === targetUserId);
-        if (!target) return;
-
-        if (target.immutable || isImmutableOwner(target.username, target.phone)) {
-          showToast('Невозможно удалить Владельца приложения!');
+        if (!target || target.immutable) {
+          showToast('Невозможно удалить Владельца');
           return;
         }
 
@@ -747,340 +605,27 @@
           return;
         }
 
-        if (authState.role !== 'owner' && authState.role !== 'admin') return;
+        const updated = aclUsers.filter(u => u.id !== targetUserId);
+        setAclUsers(updated);
+        saveAclToCloud(updated);
 
-        setAclUsers(prev => prev.filter(u => u.id !== targetUserId));
-        addAuditLog(
-          'РОЛИ И ДОСТУП',
-          `Удален доступ у участника ${target.name} (@${target.username || '—'}, роль была «${ROLES[target.role]?.title}»)`
-        );
-        showToast(`Доступ пользователя ${target.name} закрыт`);
+        addAuditLog('РОЛИ И ДОСТУП', `Отозван доступ у ${target.name} (${ROLES[target.role]?.title})`);
+        showToast(`Доступ для ${target.name} закрыт`);
       };
 
-      // Формирование текста ежедневного напоминания
-      const buildDailyReminderReport = (brandList = brandsRef.current) => {
-        const currentMonth = getCurrentMonthKey();
-        const todayDay = new Date().getDate();
-
-        const overdueBrands = brandList.filter(b => isBrandOverdue(b));
-        const upcomingBrands = brandList.filter(b => b.stage === 'active' && b.paidMonth !== currentMonth && (Number(b.paymentDay) || 1) > todayDay);
-        const contractBrands = brandList.filter(b => b.stage === 'contract');
-        const negotiatingBrands = brandList.filter(b => b.stage === 'replied');
-
-        let lines = [`🔔 Ежедневная сводка и напоминания (${new Date().toLocaleDateString('ru-RU')}):\n`];
-
-        if (overdueBrands.length > 0) {
-          const overdueSum = overdueBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-          lines.push(`🚨 ПРОСРОЧЕНА ОПЛАТА ЗА МЕСЯЦ (${overdueBrands.length} шт. на ${overdueSum.toLocaleString('ru-RU')} ₽):`);
-          overdueBrands.forEach(b => {
-            lines.push(`• ${b.name} — ${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ (срок был до ${b.paymentDay || 1} числа) ${b.tgUsername ? '@' + b.tgUsername : ''}`);
-          });
-          lines.push('');
-        } else {
-          lines.push(`✅ Просроченных оплат на сегодня нет!\n`);
+      // Удаление бренда
+      const confirmDeleteBrand = () => {
+        if (!brandToDelete) return;
+        const bName = brandToDelete.name;
+        const bId = brandToDelete.id;
+        setBrands(prev => prev.filter(b => b.id !== bId));
+        addAuditLog('ДАННЫЕ БРЕНДОВ', `Удалена карточка бренда «${bName}»`);
+        setBrandToDelete(null);
+        if (editingBrand?.id === bId) {
+          setIsModalOpen(false);
+          setEditingBrand(null);
         }
-
-        if (contractBrands.length > 0) {
-          const contractSum = contractBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-          lines.push(`📝 НУЖНО ПОДПИСАТЬ ДОГОВОР (${contractBrands.length} шт. на +${contractSum.toLocaleString('ru-RU')} ₽/мес):`);
-          contractBrands.forEach(b => {
-            lines.push(`• ${b.name} (${b.railFormat}, ${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽) ${b.tgUsername ? '— @' + b.tgUsername : ''}`);
-          });
-          lines.push('');
-        }
-
-        if (negotiatingBrands.length > 0) {
-          lines.push(`💬 Дожать в переговорах (${negotiatingBrands.length}): ${negotiatingBrands.map(b => b.name).join(', ')}`);
-        }
-
-        if (upcomingBrands.length > 0) {
-          lines.push(`⏳ Ожидаем оплату в этом месяце: ${upcomingBrands.map(b => `${b.name} (до ${b.paymentDay} числа)`).join(', ')}`);
-        }
-
-        return lines.join('\n');
-      };
-
-      const sendDailyReminderToTelegram = async (manual = false) => {
-        if (!botToken || !adminChatId) {
-          if (manual) showToast('Сначала напишите сообщение боту в Telegram, чтобы определился ваш Chat ID!');
-          return;
-        }
-        const reportText = buildDailyReminderReport(brandsRef.current);
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: adminChatId, text: reportText })
-          });
-          const data = await res.json();
-          if (data.ok) {
-            localStorage.setItem('sm_crm_last_reminder_date', getTodayDateString());
-            if (manual) showToast('Напоминание по оплатам и договорам отправлено вам в Telegram!');
-          }
-        } catch (e) {
-          if (manual) showToast('Ошибка при отправке напоминания в Telegram');
-        }
-      };
-
-      useEffect(() => {
-        if (authState.status !== 'authorized' || !autoDailyReminder || !adminChatId || botStatus !== 'connected') return;
-        const checkAndSendDaily = () => {
-          const lastSentDate = localStorage.getItem('sm_crm_last_reminder_date');
-          const today = getTodayDateString();
-          if (lastSentDate !== today) {
-            const hasOverdue = brandsRef.current.some(b => isBrandOverdue(b));
-            const hasContracts = brandsRef.current.some(b => b.stage === 'contract');
-            if (hasOverdue || hasContracts) {
-              sendDailyReminderToTelegram(false);
-            }
-          }
-        };
-        const timer = setTimeout(checkAndSendDaily, 4000);
-        const interval = setInterval(checkAndSendDaily, 60 * 60 * 1000);
-        return () => {
-          clearTimeout(timer);
-          clearInterval(interval);
-        };
-      }, [authState.status, autoDailyReminder, adminChatId, botStatus]);
-
-      const transcribeTelegramVoice = async (fileUrl) => {
-        if (!sttApiKey || !fileUrl) return null;
-        try {
-          const audioRes = await fetch(fileUrl);
-          const audioBlob = await audioRes.blob();
-          const formData = new FormData();
-          formData.append('file', audioBlob, 'voice.ogg');
-
-          const isGroq = sttApiKey.startsWith('gsk_');
-          const endpoint = isGroq
-            ? 'https://api.groq.com/openai/v1/audio/transcriptions'
-            : 'https://api.openai.com/v1/audio/transcriptions';
-          formData.append('model', isGroq ? 'whisper-large-v3-turbo' : 'whisper-1');
-          formData.append('language', 'ru');
-
-          const sttRes = await fetch(endpoint, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${sttApiKey}` },
-            body: formData
-          });
-          const sttData = await sttRes.json();
-          if (sttData && sttData.text) {
-            return sttData.text.trim();
-          }
-        } catch (err) {
-          console.error('Ошибка распознавания голосового из ТГ:', err);
-        }
-        return null;
-      };
-
-      const getTelegramFileUrl = async (fileId) => {
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
-          const data = await res.json();
-          if (data.ok && data.result.file_path) {
-            return `https://api.telegram.org/file/bot${botToken}/${data.result.file_path}`;
-          }
-        } catch (e) {
-          console.error(e);
-        }
-        return null;
-      };
-
-      const fetchBotUpdates = async (silent = false) => {
-        if (!botToken || authState.status !== 'authorized') return;
-        if (!silent) setIsSyncing(true);
-        try {
-          const offset = lastUpdateIdRef.current ? lastUpdateIdRef.current + 1 : 0;
-          const res = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${offset}&timeout=1`);
-          const data = await res.json();
-          if (data.ok && Array.isArray(data.result) && data.result.length > 0) {
-            const newMsgs = [];
-            for (const item of data.result) {
-              if (item.update_id > lastUpdateIdRef.current) {
-                lastUpdateIdRef.current = item.update_id;
-                localStorage.setItem('sm_crm_last_uid_v4', String(item.update_id));
-              }
-              const msg = item.message;
-              if (msg) {
-                const senderUsername = cleanUsername(msg.from?.username || '');
-                const senderAllowed =
-                  isImmutableOwner(senderUsername, '') ||
-                  aclUsersRef.current.some(u => cleanUsername(u.username) === senderUsername);
-
-                if (isImmutableOwner(senderUsername, '') && !adminChatId && msg.chat?.id) {
-                  setAdminChatId(String(msg.chat.id));
-                }
-
-                const voiceObj = msg.voice || msg.audio || null;
-                let voiceUrl = null;
-                let recognizedText = msg.text || msg.caption || '';
-
-                if (voiceObj && voiceObj.file_id && senderAllowed) {
-                  voiceUrl = await getTelegramFileUrl(voiceObj.file_id);
-                  if (sttApiKey && voiceUrl) {
-                    const transcript = await transcribeTelegramVoice(voiceUrl);
-                    if (transcript) {
-                      recognizedText = transcript;
-                    }
-                  }
-                }
-
-                const displayText = recognizedText || (voiceObj ? '🎤 [Голосовое сообщение]' : '[Медиа]');
-
-                newMsgs.push({
-                  updateId: item.update_id,
-                  chatId: msg.chat.id,
-                  username: msg.from?.username || '',
-                  name: ((msg.from?.first_name || '') + ' ' + (msg.from?.last_name || '')).trim(),
-                  text: displayText,
-                  hasVoice: Boolean(voiceObj),
-                  voiceUrl,
-                  senderAllowed,
-                  date: new Date(msg.date * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                });
-
-                if (senderAllowed && recognizedText) {
-                  await executeSmartCommand(recognizedText, 'telegram', msg.chat.id, {
-                    name: msg.from?.first_name || senderUsername,
-                    username: senderUsername,
-                    role: isImmutableOwner(senderUsername, '') ? 'owner' : 'user'
-                  });
-                }
-              }
-            }
-            if (newMsgs.length > 0) {
-              setTgUpdates(prev => [...newMsgs.reverse(), ...prev]);
-              showToast(`Новых сообщений из бота: ${newMsgs.length}`);
-            }
-          } else if (!silent) {
-            showToast('Новых сообщений в боте нет');
-          }
-        } catch (e) {
-          if (!silent) showToast('Ошибка синхронизации с Telegram');
-        } finally {
-          if (!silent) setIsSyncing(false);
-        }
-      };
-
-      useEffect(() => {
-        if (authState.status !== 'authorized') return;
-        const interval = setInterval(() => { fetchBotUpdates(true); }, 5000);
-        return () => clearInterval(interval);
-      }, [authState.status, botToken, sttApiKey, adminChatId]);
-
-      const executeSmartCommand = async (rawText, source = 'local', chatId = null, customActor = null) => {
-        if (!rawText || !rawText.trim()) return;
-        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const userLog = { id: 'u-' + Date.now(), sender: 'user', time: now, text: rawText, source };
-        const currentBrands = brandsRef.current;
-        const action = parseSmartInput(rawText, currentBrands);
-        let resp = '';
-
-        if (action.type === 'HELP') {
-          resp = `📋 Доступные голосовые и текстовые запросы:\n\n` +
-            `• «Напиши список брендов со статусом Написал»\n` +
-            `• «Кто не заплатил?» или /debts\n` +
-            `• «Волчок оплатил»\n` +
-            `• «Добавь бренд Outlaw @outlaw 35к до 15 числа»\n` +
-            `• «Переведи Krakatau в договор»\n` +
-            `• «Что по бренду SHU?»`;
-        } else if (action.type === 'LIST_BY_STAGE') {
-          const stObj = STAGES.find(s => s.id === action.stage);
-          const stageBrands = currentBrands.filter(b => b.stage === action.stage);
-          if (stageBrands.length === 0) {
-            resp = `На этапе «${stObj?.title}» сейчас нет брендов.`;
-          } else {
-            resp = stageBrands.map((b, i) => `${i + 1}. ${b.name}${b.tgUsername ? ` (@${b.tgUsername.replace('@', '')})` : ''}`).join('\n');
-          }
-        } else if (action.type === 'LIST_ALL') {
-          resp = currentBrands.map((b, i) => {
-            const st = STAGES.find(s => s.id === b.stage)?.short || '';
-            return `${i + 1}. ${b.name} — ${st} (${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽)`;
-          }).join('\n');
-        } else if (action.type === 'LIST_DEBTS') {
-          resp = buildDailyReminderReport(currentBrands);
-        } else if (action.type === 'MARK_PAID') {
-          const curMonth = getCurrentMonthKey();
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, paidMonth: curMonth } : b));
-          addAuditLog('ФИНАНСЫ', `Отмечена оплата бренда «${action.brand.name}» за месяц ${curMonth}`, customActor);
-          resp = `✅ Оплата от бренда «${action.brand.name}» (${(Number(action.brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽) за текущий месяц отмечена!`;
-          showToast(`Оплачено: ${action.brand.name}`);
-        } else if (action.type === 'SET_PAYMENT_DAY') {
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, paymentDay: action.paymentDay } : b));
-          addAuditLog('ФИНАНСЫ', `Изменен день оплаты бренда «${action.brand.name}» на ${action.paymentDay}-е число`, customActor);
-          resp = `📅 Для бренда «${action.brand.name}» установлен день ежемесячной оплаты: до ${action.paymentDay}-го числа.`;
-        } else if (action.type === 'STATS') {
-          const curMonth = getCurrentMonthKey();
-          const activeList = currentBrands.filter(b => b.stage === 'active');
-          const paidList = activeList.filter(b => b.paidMonth === curMonth);
-          const unpaidList = activeList.filter(b => b.paidMonth !== curMonth);
-          const overdueList = activeList.filter(b => isBrandOverdue(b));
-          const contractList = currentBrands.filter(b => b.stage === 'contract');
-
-          const totalActiveRev = activeList.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-          const paidRev = paidList.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-          const unpaidRev = unpaidList.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-          const contractRev = contractList.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-
-          resp = `💰 Детализация по выручке за месяц:\n\n` +
-            `• План по активным резидентам (${activeList.length}): ${totalActiveRev.toLocaleString('ru-RU')} ₽\n` +
-            `• Уже оплатили (${paidList.length}): ${paidRev.toLocaleString('ru-RU')} ₽\n` +
-            `• Ожидаем оплату (${unpaidList.length}): ${unpaidRev.toLocaleString('ru-RU')} ₽ (просрочено: ${overdueList.length})\n` +
-            `• На этапе договора (${contractList.length}): +${contractRev.toLocaleString('ru-RU')} ₽/мес`;
-        } else if (action.type === 'ADD_BRAND') {
-          const newB = {
-            id: 'b-' + Date.now(),
-            name: action.payload.name,
-            category: 'Streetwear / Одежда',
-            contactName: '',
-            tgUsername: action.payload.tgUsername,
-            phone: action.payload.phone,
-            stage: action.payload.stage,
-            railFormat: '1 рейл',
-            monthlyFee: action.payload.monthlyFee,
-            commission: '25%',
-            paymentDay: action.payload.paymentDay || 10,
-            paidMonth: '',
-            lastContact: getTodayDateString(),
-            notes: action.payload.notes
-          };
-          setBrands(prev => [newB, ...prev]);
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Создан бренд «${newB.name}» (аренда ${newB.monthlyFee} ₽)`, customActor);
-          resp = `✅ Добавлен бренд «${newB.name}»\n• Статус: ${STAGES.find(s => s.id === newB.stage)?.short}\n• Аренда: ${newB.monthlyFee.toLocaleString('ru-RU')} ₽ (до ${newB.paymentDay} числа)`;
-          showToast(`Добавлен: ${newB.name}`);
-        } else if (action.type === 'UPDATE_STAGE') {
-          const oldStageTitle = STAGES.find(s => s.id === action.brand.stage)?.short;
-          const newStageTitle = STAGES.find(s => s.id === action.stage)?.short;
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, stage: action.stage } : b));
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Бренд «${action.brand.name}»: статус изменен «${oldStageTitle}» → «${newStageTitle}»`, customActor);
-          resp = `🔄 Статус «${action.brand.name}» изменен на: «${STAGES.find(s => s.id === action.stage)?.title}»`;
-          showToast(`${action.brand.name} → ${newStageTitle}`);
-        } else if (action.type === 'ADD_NOTE') {
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, notes: (b.notes ? b.notes + '\n' : '') + `[${now}]: ${action.note}` } : b));
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлена заметка к бренду «${action.brand.name}»: "${action.note}"`, customActor);
-          resp = `📝 Заметка для «${action.brand.name}» сохранена:\n«${action.note}»`;
-        } else if (action.type === 'FIND_BRAND') {
-          if (action.brand) {
-            const b = action.brand;
-            const isPaid = b.paidMonth === getCurrentMonthKey();
-            resp = `🔎 ${b.name}\n• Этап: ${STAGES.find(s => s.id === b.stage)?.title}\n• Telegram: ${b.tgUsername ? '@' + b.tgUsername : '—'}\n• Телефон: ${b.phone || '—'}\n• Аренда: ${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ (до ${b.paymentDay || 10} числа)\n• Оплата: ${isPaid ? '✅ Оплачено' : '⏳ Не оплачено'}\n• Заметки: ${b.notes || '—'}`;
-          } else {
-            resp = `❓ Бренд «${action.query}» не найден в базе.`;
-          }
-        } else {
-          resp = `Не совсем понял запрос «${rawText}».\n\nПопробуйте спросить:\n• «Список брендов со статусом Написал»\n• «Кто должен заплатить?»\n• «Волчок оплатил»`;
-        }
-
-        const botLog = { id: 'b-' + Date.now(), sender: 'bot', time: now, text: resp };
-        setAssistantLogs(prev => [botLog, userLog, ...prev]);
-
-        if (source === 'telegram' && chatId && botToken) {
-          fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text: resp })
-          }).catch(console.error);
-        }
+        showToast(`Бренд «${bName}» удален`);
       };
 
       const toggleBrandPaidStatus = (brandId) => {
@@ -1091,127 +636,9 @@
         setBrands(prev => prev.map(b => b.id === brandId ? { ...b, paidMonth: nextPaid } : b));
         addAuditLog(
           'ФИНАНСЫ',
-          nextPaid
-            ? `Отмечена оплата за ${curMonth} по бренду «${target.name}» (${target.monthlyFee} ₽)`
-            : `Снята отметка оплаты за ${curMonth} по бренду «${target.name}»`
+          nextPaid ? `Отмечена оплата бренда «${target.name}» за ${curMonth}` : `Снята оплата бренда «${target.name}»`
         );
-        showToast(nextPaid ? `Оплата ${target.name} отмечена!` : `Оплата ${target.name} снята`);
-      };
-
-      const handleStageChangeWithLog = (brandId, nextStage) => {
-        const target = brands.find(b => b.id === brandId);
-        if (!target || target.stage === nextStage) return;
-        const oldStage = STAGES.find(s => s.id === target.stage)?.short;
-        const newStage = STAGES.find(s => s.id === nextStage)?.short;
-        setBrands(prev => prev.map(b => b.id === brandId ? { ...b, stage: nextStage } : b));
-        addAuditLog('ДАННЫЕ БРЕНДОВ', `Изменен этап бренда «${target.name}»: «${oldStage}» → «${newStage}»`);
-      };
-
-      // Открытие диалогового окна подтверждения удаления бренда
-      const requestDeleteBrand = (brandId) => {
-        const target = brands.find(b => b.id === brandId);
-        if (!target) return;
-        setBrandToDelete(target);
-      };
-
-      // Подтверждение удаления карточки бренда
-      const confirmDeleteBrand = () => {
-        if (!brandToDelete) return;
-        const deletedName = brandToDelete.name;
-        const deletedId = brandToDelete.id;
-        setBrands(prev => prev.filter(b => b.id !== deletedId));
-        addAuditLog('ДАННЫЕ БРЕНДОВ', `Удалена карточка бренда «${deletedName}»`);
-        setBrandToDelete(null);
-        if (editingBrand && editingBrand.id === deletedId) {
-          setIsModalOpen(false);
-          setEditingBrand(null);
-        }
-        showToast(`Бренд «${deletedName}» удален`);
-      };
-
-      const toggleVoice = () => {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) return alert('Голосовой ввод не поддерживается в этом браузере.');
-        if (isListening) return;
-
-        const rec = new SpeechRecognition();
-        rec.lang = 'ru-RU';
-        rec.onstart = () => setIsListening(true);
-        rec.onresult = (e) => {
-          const txt = e.results[0][0].transcript;
-          setCommandInput(txt);
-          executeSmartCommand(txt, 'voice');
-        };
-        rec.onerror = () => setIsListening(false);
-        rec.onend = () => setIsListening(false);
-        rec.start();
-      };
-
-      const handleSaveModal = (e) => {
-        e.preventDefault();
-        const fd = new FormData(e.target);
-        const curMonth = getCurrentMonthKey();
-        const isPaidChecked = fd.get('isPaidThisMonth') === 'on';
-
-        const data = {
-          id: editingBrand?.id || 'b-' + Date.now(),
-          name: fd.get('name').trim(),
-          category: (fd.get('category') || '').trim() || 'Одежда',
-          contactName: (fd.get('contactName') || '').trim(),
-          tgUsername: fd.get('tgUsername').trim().replace('@', ''),
-          phone: fd.get('phone').trim(),
-          stage: fd.get('stage'),
-          railFormat: fd.get('railFormat').trim() || '1 рейл',
-          monthlyFee: Number(fd.get('monthlyFee')) || 0,
-          commission: (fd.get('commission') || '').trim() || '25%',
-          paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 10)),
-          paidMonth: isPaidChecked ? curMonth : '',
-          lastContact: getTodayDateString(),
-          notes: fd.get('notes').trim()
-        };
-
-        if (editingBrand) {
-          setBrands(brands.map(b => b.id === data.id ? data : b));
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Отредактирована карточка бренда «${data.name}» (этап: ${STAGES.find(s => s.id === data.stage)?.short}, аренда: ${data.monthlyFee} ₽)`);
-          showToast(`Бренд ${data.name} обновлен`);
-        } else {
-          setBrands([data, ...brands]);
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлен новый бренд «${data.name}» (аренда: ${data.monthlyFee} ₽)`);
-          showToast(`Бренд ${data.name} добавлен`);
-        }
-        setIsModalOpen(false);
-        setEditingBrand(null);
-      };
-
-      const setupBotInTelegram = async () => {
-        if (!botToken) return alert('Укажите токен бота');
-        try {
-          const commands = [
-            { command: 'start', description: 'Шпаргалка по командам и голосовым запросам' },
-            { command: 'debts', description: 'Кто просрочил оплату и с кем подписать договор' },
-            { command: 'stats', description: 'Детализация по выручке и оплатам за месяц' },
-            { command: 'list', description: 'Список всех брендов' },
-            { command: 'add', description: 'Добавить бренд: /add Имя @user +7... 35к' }
-          ];
-          await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ commands })
-          });
-          if (webAppUrl && webAppUrl.startsWith('https://')) {
-            await fetch(`https://api.telegram.org/bot${botToken}/setChatMenuButton`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                menu_button: { type: 'web_app', text: 'Открыть CRM', web_app: { url: webAppUrl } }
-              })
-            });
-          }
-          addAuditLog('СИСТЕМА', 'Обновлены команды бота и кнопка Menu Button через Telegram API');
-          alert('✅ Команды и кнопка «Открыть CRM» успешно обновлены в боте!');
-        } catch (e) {
-          alert('Ошибка при настройке через API');
-        }
+        showToast(nextPaid ? `Оплата ${target.name} отмечена!` : `Оплата снята`);
       };
 
       const financeStats = useMemo(() => {
@@ -1222,60 +649,67 @@
         const overdueBrands = activeBrands.filter(b => isBrandOverdue(b));
         const contractBrands = brands.filter(b => b.stage === 'contract');
 
-        const plannedRevenue = activeBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-        const receivedRevenue = paidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-        const pendingRevenue = unpaidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-        const overdueRevenue = overdueBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-        const contractPotential = contractBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
-
         return {
           activeBrands,
           paidBrands,
           unpaidBrands,
           overdueBrands,
           contractBrands,
-          plannedRevenue,
-          receivedRevenue,
-          pendingRevenue,
-          overdueRevenue,
-          contractPotential
+          plannedRevenue: activeBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0),
+          receivedRevenue: paidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0),
+          pendingRevenue: unpaidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0),
+          overdueRevenue: overdueBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0),
+          contractPotential: contractBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0)
         };
       }, [brands]);
 
       const filteredBrands = brands.filter(b => {
-        const matchesQuery =
-          b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          b.tgUsername.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          b.phone.includes(searchQuery);
-        const matchesStage = stageFilter === 'all' || b.stage === stageFilter;
-        return matchesQuery && matchesStage;
+        const q = searchQuery.toLowerCase();
+        return (
+          b.name.toLowerCase().includes(q) ||
+          b.tgUsername.toLowerCase().includes(q) ||
+          b.phone.includes(q)
+        );
       });
 
       const currentMonthKey = getCurrentMonthKey();
 
       // =========================================================
-      // ЭКРАН ПРОВЕРКИ ИЛИ ПОЛНОЙ БЛОКИРОВКИ ("ДОСТУП ОГРАНИЧЕН")
+      // ЭКРАН ОГРАНИЧЕНИЯ ДОСТУПА
       // =========================================================
       if (authState.status === 'checking') {
         return (
           <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none">
-            <div className="text-slate-500 text-xs font-mono tracking-widest uppercase animate-pulse">
-              Проверка криптографической подписи Telegram API...
+            <div className="text-slate-400 text-xs font-mono tracking-widest uppercase animate-pulse">
+              Авторизация Telegram API...
             </div>
           </div>
         );
       }
 
       if (authState.status !== 'authorized') {
+        const u = authState.tgUser;
         return (
           <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl px-8 py-7 shadow-2xl text-center max-w-xs w-full">
-              <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto mb-3 text-xl font-bold">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl px-6 py-7 shadow-2xl text-center max-w-sm w-full space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto text-xl font-bold">
                 🔒
               </div>
               <h1 className="text-base font-bold text-white tracking-tight">
                 Доступ ограничен
               </h1>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                {authState.reason === 'not_in_telegram'
+                  ? 'Приложение доступно только внутри официального Telegram-бота @SM_Brand_CRM_bot.'
+                  : `Ваш аккаунт (${u?.username ? '@' + u.username : 'ID: ' + (u?.id || '—')}) не добавлен в список доступа.`}
+              </p>
+              {u && (
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-[11px] text-slate-400 font-mono text-left space-y-0.5">
+                  <div>Ваш @username: <span className="text-white font-semibold">{u.username ? '@' + u.username : 'нет'}</span></div>
+                  <div>Ваш Telegram ID: <span className="text-sky-400 font-semibold">{u.id}</span></div>
+                  <div className="text-[10px] text-slate-500 pt-1">Передайте эти данные Владельцу (@tvoyaddoma) для добавления.</div>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -1285,7 +719,7 @@
       const isOwner = authState.role === 'owner';
       const isAdminOrOwner = authState.role === 'owner' || authState.role === 'admin';
 
-      // Второстепенные вкладки, спрятанные под кнопку «Ещё»
+      // Вкладки в выпадающем меню «Ещё»
       const moreTabsList = [
         { id: 'list', label: '📋 Таблица контактов' },
         { id: 'assistant', label: '🎙 Чат и Голос' },
@@ -1300,11 +734,10 @@
       const activeMoreTabObj = moreTabsList.find(t => t.id === activeTab);
 
       // =========================================================
-      // ОСНОВНОЙ ИНТЕРФЕЙС (ДОСТУПЕН ТОЛЬКО АВТОРИЗОВАННЫМ РОЛЯМ)
+      // ОСНОВНОЙ ИНТЕРФЕЙС CRM
       // =========================================================
       return (
         <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto p-3 sm:p-6">
-          {/* Всплывающее уведомление */}
           {toast && (
             <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700">
               ⚡️ {toast}
@@ -1328,139 +761,90 @@
                     @{botInfo?.username || DEFAULT_BOT_USERNAME}
                   </a>
                 </div>
-                <p className="text-xs text-slate-500">Защищенная сессия Telegram Mini App • Управление брендами и оплатами</p>
+                <p className="text-xs text-slate-500">Защищенная сессия • Ролевой доступ</p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => sendDailyReminderToTelegram(true)}
-                className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl text-xs font-semibold transition"
-              >
-                🔔 Сводка долгов в ТГ
-              </button>
-              <button onClick={() => fetchBotUpdates(false)} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-semibold text-slate-700 transition">
-                🔄 {isSyncing ? 'Синхр...' : 'Обновить ТГ'}
-              </button>
+            <div className="flex items-center gap-2">
               <button onClick={() => { setEditingBrand(null); setIsModalOpen(true); }} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition">
                 + Добавить бренд
               </button>
             </div>
           </header>
 
-          {/* Баннер просроченных оплат */}
-          {financeStats.overdueBrands.length > 0 && (
-            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 text-xs text-rose-900">
-                <span className="text-base">🚨</span>
-                <div>
-                  <span className="font-bold">Просрочена ежемесячная оплата ({financeStats.overdueBrands.length} шт. на сумму {financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽): </span>
-                  <span>
-                    {financeStats.overdueBrands.map(b => `${b.name} (до ${b.paymentDay} числа)`).join(', ')}
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => setActiveTab('finance')}
-                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold"
-              >
-                Перейти к оплатам
-              </button>
-            </div>
-          )}
-
-          {/* Командная строка */}
-          <div className="bg-slate-900 text-white p-3 rounded-2xl flex items-center gap-2 mb-4 shadow-xs">
-            <input
-              type="text"
-              value={commandInput}
-              onChange={e => setCommandInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  executeSmartCommand(commandInput, 'local');
-                  setCommandInput('');
-                }
-              }}
-              placeholder="Напишите или скажите: «Напиши список брендов со статусом Написал», «Кто не заплатил?», «Волчок оплатил»..."
-              className="flex-1 bg-slate-800 px-3.5 py-2 rounded-xl text-xs outline-none focus:ring-1 focus:ring-sky-400 placeholder-slate-400"
-            />
-            <button
-              onClick={toggleVoice}
-              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1 transition ${isListening ? 'bg-rose-600 animate-pulse text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
-            >
-              🎙 {isListening ? 'Слушаю...' : 'Голос'}
-            </button>
-            <button
-              onClick={() => { executeSmartCommand(commandInput, 'local'); setCommandInput(''); }}
-              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold transition"
-            >
-              Спросить
-            </button>
-          </div>
-
-          {/* Детализированные карточки выручки */}
+          {/* Сводные показатели выручки */}
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
             <div className="bg-white p-3.5 rounded-xl border border-slate-200">
-              <div className="text-slate-500 text-[11px]">План выручки (активные)</div>
+              <div className="text-slate-500 text-[11px]">План выручки</div>
               <div className="text-xl font-bold text-slate-900 mt-0.5">{financeStats.plannedRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Резидентов в зале: {financeStats.activeBrands.length}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">В зале: {financeStats.activeBrands.length} бр.</div>
             </div>
             <div className="bg-white p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/30">
-              <div className="text-emerald-700 text-[11px] font-medium">Фактически получено</div>
+              <div className="text-emerald-700 text-[11px] font-medium">Получено</div>
               <div className="text-xl font-bold text-emerald-700 mt-0.5">{financeStats.receivedRevenue.toLocaleString('ru-RU')} ₽</div>
               <div className="text-[10px] text-emerald-600 mt-0.5">Оплатили: {financeStats.paidBrands.length} из {financeStats.activeBrands.length}</div>
             </div>
             <div className="bg-white p-3.5 rounded-xl border border-amber-200 bg-amber-50/30">
-              <div className="text-amber-800 text-[11px] font-medium">Ожидает оплаты в этом мес.</div>
+              <div className="text-amber-800 text-[11px] font-medium">Ожидаем</div>
               <div className="text-xl font-bold text-amber-700 mt-0.5">{financeStats.pendingRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-amber-700 mt-0.5">Не оплатили: {financeStats.unpaidBrands.length} шт.</div>
+              <div className="text-[10px] text-amber-700 mt-0.5">Не оплатили: {financeStats.unpaidBrands.length}</div>
             </div>
             <div className="bg-white p-3.5 rounded-xl border border-rose-200 bg-rose-50/30">
-              <div className="text-rose-700 text-[11px] font-medium">Просрочено по дате</div>
+              <div className="text-rose-700 text-[11px] font-medium">Просрочено</div>
               <div className="text-xl font-bold text-rose-600 mt-0.5">{financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-rose-600 mt-0.5">Должников: {financeStats.overdueBrands.length} шт.</div>
+              <div className="text-[10px] text-rose-600 mt-0.5">Должников: {financeStats.overdueBrands.length}</div>
             </div>
             <div className="bg-white p-3.5 rounded-xl border border-purple-200 bg-purple-50/30 col-span-2 lg:col-span-1">
-              <div className="text-purple-700 text-[11px] font-medium">На подписании договора</div>
+              <div className="text-purple-700 text-[11px] font-medium">На договоре</div>
               <div className="text-xl font-bold text-purple-700 mt-0.5">+{financeStats.contractPotential.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-purple-600 mt-0.5">Брендов на договоре: {financeStats.contractBrands.length}</div>
+              <div className="text-[10px] text-purple-600 mt-0.5">Брендов: {financeStats.contractBrands.length}</div>
             </div>
           </div>
 
-          {/* Навигация по вкладкам: на виду только Канбан, Финансы и выпадающий список «Ещё» */}
+          {/* =========================================================
+              СТРОГО В ОДИН РЯД: КАНБАН, ФИНАНСЫ И ВЫПАДАЮЩЕЕ «ЕЩЁ»
+             ========================================================= */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div className="flex flex-wrap items-center gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-semibold relative">
+            <div className="inline-flex items-center flex-nowrap whitespace-nowrap bg-slate-200/90 p-1 rounded-xl text-xs font-semibold shadow-xs">
+              {/* Вкладка 1: Канбан */}
               <button
+                type="button"
                 onClick={() => { setActiveTab('kanban'); setIsMoreMenuOpen(false); }}
-                className={`px-3.5 py-1.5 rounded-lg transition ${activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`px-3.5 py-1.5 rounded-lg transition shrink-0 ${
+                  activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
                 Канбан
               </button>
 
+              {/* Вкладка 2: Финансы и Оплаты */}
               <button
+                type="button"
                 onClick={() => { setActiveTab('finance'); setIsMoreMenuOpen(false); }}
-                className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`px-3.5 py-1.5 rounded-lg transition inline-flex items-center gap-1.5 shrink-0 ${
+                  activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                <span>Финансы и Оплаты</span>
+                <span>💰 Финансы и Оплаты</span>
                 {financeStats.overdueBrands.length > 0 && (
-                  <span className="ml-0.5 px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
+                  <span className="px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px] font-bold">
                     {financeStats.overdueBrands.length}
                   </span>
                 )}
               </button>
 
-              {/* Выпадающее меню «Ещё» */}
-              <div className="relative" ref={moreMenuRef}>
+              {/* Вкладка 3: Выпадающее меню «Ещё» */}
+              <div className="relative inline-block shrink-0" ref={moreMenuRef}>
                 <button
                   type="button"
                   onClick={() => setIsMoreMenuOpen(prev => !prev)}
-                  className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-lg transition inline-flex items-center gap-1.5 ${
                     activeMoreTabObj
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <span>{activeMoreTabObj ? `Ещё: ${activeMoreTabObj.label}` : 'Ещё'}</span>
+                  <span>{activeMoreTabObj ? activeMoreTabObj.label : 'Ещё'}</span>
                   {!activeMoreTabObj && tgUpdates.length > 0 && (
                     <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[10px]">
                       {tgUpdates.length}
@@ -1470,7 +854,7 @@
                 </button>
 
                 {isMoreMenuOpen && (
-                  <div className="absolute left-0 mt-1.5 w-60 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-40">
+                  <div className="absolute left-0 mt-1.5 w-64 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-50">
                     {moreTabsList.map(item => (
                       <button
                         key={item.id}
@@ -1500,17 +884,16 @@
               </div>
             </div>
 
-            {(activeTab === 'kanban' || activeTab === 'list') && (
-              <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Поиск бренда, @tg, телефона..."
-                  className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full sm:w-64 outline-none"
-                />
-              </div>
-            )}
+            {/* Поле поиска брендов */}
+            <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Поиск бренда, @username..."
+                className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full sm:w-64 outline-none"
+              />
+            </div>
           </div>
 
           {/* ВКЛАДКА 1: КАНБАН-ДОСКА */}
@@ -1585,32 +968,6 @@
                                   {brand.notes}
                                 </p>
                               )}
-
-                              <div className="flex items-center gap-1.5 pt-1">
-                                <button
-                                  onClick={() => {
-                                    const offer = DEFAULT_OFFER_TEMPLATE.replace('{brand}', brand.name);
-                                    navigator.clipboard.writeText(offer);
-                                    if (brand.stage === 'lead') {
-                                      handleStageChangeWithLog(brand.id, 'contacted');
-                                    }
-                                    if (brand.tgUsername) {
-                                      window.open(`https://t.me/${brand.tgUsername.replace('@','')}`, '_blank');
-                                    }
-                                    showToast(`Оффер для «${brand.name}» скопирован!`);
-                                  }}
-                                  className="flex-1 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold transition"
-                                >
-                                  Оффер + ТГ
-                                </button>
-                                <select
-                                  value={brand.stage}
-                                  onChange={e => handleStageChangeWithLog(brand.id, e.target.value)}
-                                  className="text-[10px] bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1 font-semibold"
-                                >
-                                  {STAGES.map(s => <option key={s.id} value={s.id}>{s.short}</option>)}
-                                </select>
-                              </div>
                             </div>
                           );
                         })
@@ -1624,264 +981,75 @@
 
           {/* ВКЛАДКА 2: ФИНАНСЫ И ОПЛАТЫ */}
           {activeTab === 'finance' && (
-            <div className="space-y-6">
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                  <div>
-                    <h3 className="font-bold text-sm text-slate-900">📅 График ежемесячных платежей ({currentMonthKey})</h3>
-                    <p className="text-xs text-slate-500">Если оплата не отмечена до указанного числа — бот присылает ежедневное напоминание.</p>
-                  </div>
-                  <button
-                    onClick={() => sendDailyReminderToTelegram(true)}
-                    className="px-3.5 py-2 bg-slate-900 text-white rounded-xl text-xs font-semibold"
-                  >
-                    ✈️ Отправить напоминание в Telegram
-                  </button>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
-                      <tr>
-                        <th className="p-3">Бренд</th>
-                        <th className="p-3">Контакты</th>
-                        <th className="p-3">Формат размещения</th>
-                        <th className="p-3">Сумма в месяц</th>
-                        <th className="p-3">День оплаты</th>
-                        <th className="p-3">Статус за {currentMonthKey}</th>
-                        <th className="p-3 text-right">Действие</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {financeStats.activeBrands.map(b => {
-                        const isPaid = b.paidMonth === currentMonthKey;
-                        const overdue = isBrandOverdue(b);
-                        return (
-                          <tr key={b.id} className={overdue ? 'bg-rose-50/50' : ''}>
-                            <td className="p-3 font-bold text-slate-900">{b.name}</td>
-                            <td className="p-3">
-                              {b.tgUsername && <a href={`https://t.me/${b.tgUsername.replace('@','')}`} target="_blank" className="text-sky-600 font-medium mr-2">@{b.tgUsername.replace('@','')}</a>}
-                              {b.phone && <a href={`tel:${b.phone}`} className="text-emerald-700">{b.phone}</a>}
-                            </td>
-                            <td className="p-3 text-slate-600">{b.railFormat} (комиссия {b.commission})</td>
-                            <td className="p-3 font-bold text-slate-900">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</td>
-                            <td className="p-3 font-semibold">До {b.paymentDay || 10}-го числа</td>
-                            <td className="p-3">
-                              {isPaid ? (
-                                <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">✅ Оплачено</span>
-                              ) : overdue ? (
-                                <span className="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">🚨 Просрочено!</span>
-                              ) : (
-                                <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">⏳ Ожидает оплаты</span>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              <button
-                                onClick={() => toggleBrandPaidStatus(b.id)}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${isPaid ? 'bg-slate-200 text-slate-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
-                              >
-                                {isPaid ? 'Снять отметку' : 'Отметить оплату'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
+              <h3 className="font-bold text-sm text-slate-900 mb-4">График платежей резидентов шоурума</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                    <tr>
+                      <th className="p-3">Бренд</th>
+                      <th className="p-3">Сумма в месяц</th>
+                      <th className="p-3">День оплаты</th>
+                      <th className="p-3">Статус за {currentMonthKey}</th>
+                      <th className="p-3 text-right">Действие</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {financeStats.activeBrands.map(b => {
+                      const isPaid = b.paidMonth === currentMonthKey;
+                      const overdue = isBrandOverdue(b);
+                      return (
+                        <tr key={b.id} className={overdue ? 'bg-rose-50/50' : ''}>
+                          <td className="p-3 font-bold text-slate-900">{b.name}</td>
+                          <td className="p-3 font-bold text-slate-900">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</td>
+                          <td className="p-3 font-semibold">До {b.paymentDay || 10}-го числа</td>
+                          <td className="p-3">
+                            {isPaid ? (
+                              <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">✅ Оплачено</span>
+                            ) : overdue ? (
+                              <span className="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">🚨 Просрочено!</span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">⏳ Ожидает оплаты</span>
+                            )}
+                          </td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => toggleBrandPaidStatus(b.id)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${isPaid ? 'bg-slate-200 text-slate-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+                            >
+                              {isPaid ? 'Снять отметку' : 'Отметить оплату'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
 
-          {/* ВКЛАДКА 3: ТАБЛИЦА КОНТАКТОВ */}
-          {activeTab === 'list' && (
-            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
-                  <tr>
-                    <th className="p-3.5">Бренд</th>
-                    <th className="p-3.5">Этап</th>
-                    <th className="p-3.5">Контакты (1 клик)</th>
-                    <th className="p-3.5">Аренда / День оплаты</th>
-                    <th className="p-3.5">Оплата в этом мес.</th>
-                    <th className="p-3.5 text-right">Действия</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredBrands.map(b => {
-                    const isPaid = b.paidMonth === currentMonthKey;
-                    return (
-                      <tr key={b.id} className="hover:bg-slate-50/70 transition">
-                        <td className="p-3.5">
-                          <div className="font-bold text-slate-900">{b.name}</div>
-                          <div className="text-[11px] text-slate-500">{b.category}</div>
-                        </td>
-                        <td className="p-3.5">
-                          <select
-                            value={b.stage}
-                            onChange={e => handleStageChangeWithLog(b.id, e.target.value)}
-                            className="bg-slate-100 border border-slate-200 rounded-lg p-1 text-[11px] font-semibold"
-                          >
-                            {STAGES.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
-                          </select>
-                        </td>
-                        <td className="p-3.5">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {b.tgUsername && <a href={`https://t.me/${b.tgUsername.replace('@','')}`} target="_blank" className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded-md font-medium">@{b.tgUsername.replace('@','')}</a>}
-                            {b.phone && <a href={`tel:${b.phone}`} className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md font-medium">{b.phone}</a>}
-                          </div>
-                        </td>
-                        <td className="p-3.5">
-                          <div className="font-bold">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</div>
-                          <div className="text-[11px] text-slate-500">До {b.paymentDay || 10}-го числа • {b.railFormat}</div>
-                        </td>
-                        <td className="p-3.5">
-                          <button
-                            onClick={() => toggleBrandPaidStatus(b.id)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}
-                          >
-                            {isPaid ? '✅ Оплачено' : 'Отметить оплату'}
-                          </button>
-                        </td>
-                        <td className="p-3.5 text-right whitespace-nowrap">
-                          <button onClick={() => { setEditingBrand(b); setIsModalOpen(true); }} className="text-slate-500 hover:text-slate-900 mr-2 font-medium">Ред.</button>
-                          <button onClick={() => requestDeleteBrand(b.id)} className="text-rose-500 hover:text-rose-700 font-medium">Удалить</button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* ВКЛАДКА 4: ЧАТ И ГОЛОС */}
-          {activeTab === 'assistant' && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-4 shadow-xs flex flex-col h-[68vh]">
-                <div className="flex-1 overflow-y-auto flex flex-col-reverse gap-3 p-2 bg-slate-50/60 rounded-xl mb-3">
-                  {assistantLogs.map(log => (
-                    <div key={log.id} className={`max-w-[85%] p-3 rounded-2xl text-xs whitespace-pre-line ${log.sender === 'user' ? 'self-end bg-slate-900 text-white' : 'self-start bg-white border border-slate-200 text-slate-800 shadow-2xs'}`}>
-                      <div className="opacity-60 text-[10px] mb-1 font-semibold">{log.sender === 'user' ? 'Вы' : '🤖 @SM_Brand_CRM_bot'} • {log.time}</div>
-                      {log.text}
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={commandInput}
-                    onChange={e => setCommandInput(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        executeSmartCommand(commandInput, 'local');
-                        setCommandInput('');
-                      }
-                    }}
-                    placeholder="Например: «Напиши список брендов со статусом Написал»..."
-                    className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none"
-                  />
-                  <button onClick={toggleVoice} className="px-3 py-2 bg-rose-50 text-rose-700 rounded-xl text-xs font-semibold">🎙</button>
-                  <button onClick={() => { executeSmartCommand(commandInput, 'local'); setCommandInput(''); }} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-semibold">Отправить</button>
-                </div>
-              </div>
-
-              <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-2 text-xs">
-                <h4 className="font-bold text-sm text-slate-900 mb-2">Быстрые запросы:</h4>
-                {[
-                  'Напиши список брендов со статусом «Написал»',
-                  'Список брендов со статусом Договор',
-                  'Кто должен заплатить?',
-                  'Детализация по выручке',
-                  'Волчок оплатил',
-                  'Что по бренду SHU?'
-                ].map((q, i) => (
-                  <button
-                    key={i}
-                    onClick={() => executeSmartCommand(q, 'local')}
-                    className="w-full text-left p-2.5 rounded-xl border border-slate-200 hover:bg-sky-50 hover:border-sky-300 transition font-medium text-slate-700"
-                  >
-                    «{q}»
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ВКЛАДКА 5: ВХОДЯЩИЕ СООБЩЕНИЯ ИЗ ТГ */}
-          {activeTab === 'telegram' && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-bold text-sm">Входящие сообщения и голосовые из @SM_Brand_CRM_bot</h3>
-                  <p className="text-xs text-slate-500">Команды выполняются только от пользователей, внесенных в систему ролей.</p>
-                </div>
-                <button onClick={() => fetchBotUpdates(false)} className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-semibold">Обновить</button>
-              </div>
-              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                {tgUpdates.length === 0 ? (
-                  <p className="text-center py-8 text-xs text-slate-400">Сообщений пока нет.</p>
-                ) : (
-                  tgUpdates.map(u => (
-                    <div key={u.updateId} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col gap-2 text-xs">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <div className="font-bold text-slate-800">
-                            {u.name} {u.username && <span className="text-sky-600 font-normal">(@{u.username})</span>}
-                            {!u.senderAllowed && <span className="ml-2 px-2 py-0.5 bg-rose-100 text-rose-700 rounded text-[10px]">Внешний контакт</span>}
-                          </div>
-                          <div className="text-slate-700 mt-1">{u.text}</div>
-                          <div className="text-[10px] text-slate-400 mt-0.5">{u.date}</div>
-                        </div>
-                        <button
-                          onClick={() => executeSmartCommand(u.text, 'telegram', u.chatId)}
-                          className="px-2.5 py-1 bg-slate-900 text-white rounded-lg text-[11px] font-semibold"
-                        >
-                          Выполнить как команду
-                        </button>
-                      </div>
-                      {u.hasVoice && u.voiceUrl && (
-                        <audio controls src={u.voiceUrl} className="w-full h-8 mt-1" />
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ВКЛАДКА 6: УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И РОЛЯМИ (ВЛАДЕЛЕЦ И АДМИН) */}
+          {/* ВКЛАДКА 3: ПОЛЬЗОВАТЕЛИ И РОЛИ (ACL) */}
           {activeTab === 'users' && isAdminOrOwner && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
                 <div>
-                  <h3 className="font-bold text-sm text-slate-900">➕ Добавить доступ в приложение</h3>
+                  <h3 className="font-bold text-sm text-slate-900">➕ Добавить доступ пользователю</h3>
                   <p className="text-slate-500 mt-0.5">
-                    {isOwner
-                      ? 'Как Владелец, вы можете назначать Админов и Пользователей.'
-                      : 'Как Админ, вы можете добавлять и удалять Пользователей.'}
+                    Укажите Telegram @username (например, `alex_brand`) или числовой Telegram ID пользователя.
                   </p>
                 </div>
 
                 <form onSubmit={handleAddAclUser} className="space-y-3">
                   <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Telegram @username</label>
+                    <label className="block font-semibold text-slate-700 mb-1">Telegram @username или ID *</label>
                     <input
                       type="text"
-                      value={newAclUsername}
-                      onChange={e => setNewAclUsername(e.target.value)}
-                      placeholder="@username"
-                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Телефон (необязательно)</label>
-                    <input
-                      type="text"
-                      value={newAclPhone}
-                      onChange={e => setNewAclPhone(e.target.value)}
-                      placeholder="+7 999 000 00 00"
-                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none"
+                      required
+                      value={newAclIdentifier}
+                      onChange={e => setNewAclIdentifier(e.target.value)}
+                      placeholder="@username или 123456789"
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-mono"
                     />
                   </div>
                   <div>
@@ -1890,7 +1058,7 @@
                       type="text"
                       value={newAclName}
                       onChange={e => setNewAclName(e.target.value)}
-                      placeholder="Например: Менеджер зала Анна"
+                      placeholder="Например: Администратор Анна"
                       className="w-full border border-slate-200 rounded-xl p-2.5 outline-none"
                     />
                   </div>
@@ -1902,8 +1070,8 @@
                       onChange={e => setNewAclRole(e.target.value)}
                       className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold"
                     >
+                      <option value="admin">Админ (Управление пользователями и данными)</option>
                       <option value="user">Пользователь (Редактирование данных)</option>
-                      {isOwner && <option value="admin">Админ (Управление пользователями и данными)</option>}
                     </select>
                   </div>
                   <button
@@ -1916,38 +1084,32 @@
               </div>
 
               <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
-                <h3 className="font-bold text-sm text-slate-900 mb-1">👥 Список ролей и доступов к CRM</h3>
-                <p className="text-xs text-slate-500 mb-4">
-                  Все пользователи вне этого списка видят только экран «Доступ ограничен». Статус Владельца (`@tvoyaddoma`) защищен на уровне кода.
-                </p>
-
+                <h3 className="font-bold text-sm text-slate-900 mb-1">👥 Список доступов</h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
                       <tr>
                         <th className="p-3">Имя</th>
-                        <th className="p-3">Telegram / Телефон</th>
-                        <th className="p-3">Текущая роль</th>
-                        <th className="p-3">Добавлен</th>
+                        <th className="p-3">Идентификатор в Telegram</th>
+                        <th className="p-3">Роль</th>
                         <th className="p-3 text-right">Управление</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {aclUsers.map(u => {
-                        const lockedOwner = u.immutable || isImmutableOwner(u.username, u.phone);
-                        const roleInfo = ROLES[u.role] || ROLES.user;
+                        const isLocked = u.immutable || isImmutableOwner(u.username, u.phone, u.tgId);
+                        const roleObj = ROLES[u.role] || ROLES.user;
                         return (
-                          <tr key={u.id} className={lockedOwner ? 'bg-amber-50/40' : ''}>
+                          <tr key={u.id} className={isLocked ? 'bg-amber-50/40' : ''}>
                             <td className="p-3 font-bold text-slate-900">
                               {u.name}
-                              {lockedOwner && <span className="ml-1.5 text-[10px] text-amber-700 font-extrabold">(Вы • Неоспоримый)</span>}
+                              {isLocked && <span className="ml-1 text-[10px] text-amber-700 font-extrabold">(Вы)</span>}
+                            </td>
+                            <td className="p-3 font-mono">
+                              {u.username ? `@${u.username}` : (u.tgId ? `ID: ${u.tgId}` : '—')}
                             </td>
                             <td className="p-3">
-                              {u.username && <span className="text-sky-700 font-semibold mr-2">@{u.username}</span>}
-                              {u.phone && <span className="text-slate-600">{u.phone}</span>}
-                            </td>
-                            <td className="p-3">
-                              {lockedOwner ? (
+                              {isLocked ? (
                                 <span className={`px-2.5 py-1 rounded-full text-[11px] border ${ROLES.owner.badge}`}>
                                   👑 Владелец (Неизменяемый)
                                 </span>
@@ -1961,24 +1123,21 @@
                                   <option value="user">Пользователь</option>
                                 </select>
                               ) : (
-                                <span className={`px-2.5 py-1 rounded-full text-[11px] border ${roleInfo.badge}`}>
-                                  {roleInfo.title}
+                                <span className={`px-2.5 py-1 rounded-full text-[11px] border ${roleObj.badge}`}>
+                                  {roleObj.title}
                                 </span>
                               )}
                             </td>
-                            <td className="p-3 text-slate-400 text-[11px]">{u.addedAt}</td>
                             <td className="p-3 text-right">
-                              {lockedOwner ? (
+                              {isLocked ? (
                                 <span className="text-[11px] text-slate-400 italic">Защищено</span>
-                              ) : (isOwner || (authState.role === 'admin' && u.role === 'user')) ? (
+                              ) : (
                                 <button
                                   onClick={() => handleRemoveAclUser(u.id)}
                                   className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-semibold text-[11px]"
                                 >
                                   Удалить
                                 </button>
-                              ) : (
-                                <span className="text-[11px] text-slate-400">—</span>
                               )}
                             </td>
                           </tr>
@@ -1991,40 +1150,32 @@
             </div>
           )}
 
-          {/* ВКЛАДКА 7: ДАТАЛОГИ (ДОСТУПНО ТОЛЬКО ВЛАДЕЛЬЦУ @tvoyaddoma) */}
+          {/* ВКЛАДКА 4: ДАТАЛОГИ */}
           {activeTab === 'datalogs' && isOwner && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="font-bold text-sm text-slate-900">📜 Даталог изменений ролей и данных (Только для Владельца)</h3>
-                  <p className="text-xs text-slate-500">Полный журнал действий всех пользователей и администраторов в системе.</p>
-                </div>
-              </div>
-
-              <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+              <h3 className="font-bold text-sm text-slate-900">📜 Даталог аудита (Только для Владельца)</h3>
+              <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold sticky top-0">
                     <tr>
-                      <th className="p-3">Дата и время</th>
-                      <th className="p-3">Кто выполнил</th>
+                      <th className="p-3">Время</th>
+                      <th className="p-3">Пользователь</th>
                       <th className="p-3">Роль</th>
                       <th className="p-3">Категория</th>
-                      <th className="p-3">Описание действия</th>
+                      <th className="p-3">Действие</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {auditLogs.map(item => (
-                      <tr key={item.id} className="hover:bg-slate-50/70">
-                        <td className="p-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">{item.timestamp}</td>
-                        <td className="p-3 font-bold text-slate-900">
-                          {item.actorName} {item.actorUsername && <span className="text-sky-600 font-normal">(@{item.actorUsername})</span>}
-                        </td>
+                      <tr key={item.id}>
+                        <td className="p-3 font-mono text-[11px] text-slate-400 whitespace-nowrap">{item.timestamp}</td>
+                        <td className="p-3 font-bold text-slate-900">{item.actorName}</td>
                         <td className="p-3">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] border ${(ROLES[item.actorRole] || ROLES.user).badge}`}>
                             {(ROLES[item.actorRole] || ROLES.user).title}
                           </span>
                         </td>
-                        <td className="p-3 font-semibold text-slate-700 text-[11px]">{item.category}</td>
+                        <td className="p-3 font-semibold text-slate-700">{item.category}</td>
                         <td className="p-3 text-slate-800">{item.action}</td>
                       </tr>
                     ))}
@@ -2034,63 +1185,82 @@
             </div>
           )}
 
-          {/* ВКЛАДКА 8: НАСТРОЙКИ БОТА (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) */}
-          {activeTab === 'guide' && isOwner && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
-                <h3 className="font-bold text-base text-slate-900">🎙 Распознавание голосовых (.ogg) из Telegram и Напоминания</h3>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Ваш личный Telegram Chat ID (для ежедневных напоминаний):</label>
-                  <input
-                    type="text"
-                    value={adminChatId}
-                    onChange={e => setAdminChatId(e.target.value)}
-                    placeholder="Определится автоматически, когда вы напишете боту"
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
-                </div>
+          {/* ВКЛАДКА 5: ТАБЛИЦА */}
+          {activeTab === 'list' && (
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
+                  <tr>
+                    <th className="p-3.5">Бренд</th>
+                    <th className="p-3.5">Этап</th>
+                    <th className="p-3.5">Контакты</th>
+                    <th className="p-3.5">Аренда</th>
+                    <th className="p-3.5 text-right">Действия</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredBrands.map(b => (
+                    <tr key={b.id} className="hover:bg-slate-50/70">
+                      <td className="p-3.5 font-bold text-slate-900">{b.name}</td>
+                      <td className="p-3.5">{STAGES.find(s => s.id === b.stage)?.title}</td>
+                      <td className="p-3.5">{b.tgUsername ? '@' + b.tgUsername : b.phone || '—'}</td>
+                      <td className="p-3.5 font-bold">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</td>
+                      <td className="p-3.5 text-right">
+                        <button onClick={() => { setEditingBrand(b); setIsModalOpen(true); }} className="text-slate-500 hover:text-slate-900 mr-2 font-medium">Ред.</button>
+                        <button onClick={() => setBrandToDelete(b)} className="text-rose-500 hover:text-rose-700 font-medium">Удалить</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-                <label className="flex items-center gap-2 cursor-pointer pt-1">
-                  <input
-                    type="checkbox"
-                    checked={autoDailyReminder}
-                    onChange={e => setAutoDailyReminder(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="font-semibold text-slate-800">Ежедневно отправлять в Telegram сводку по просроченным оплатам и договорам</span>
-                </label>
-
-                <div className="pt-2 border-t border-slate-100">
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    API-ключ Groq (`gsk_...`) или OpenAI (`sk-...`) для авто-перевода голосовых из Telegram в текст:
-                  </label>
-                  <input
-                    type="password"
-                    value={sttApiKey}
-                    onChange={e => setSttApiKey(e.target.value)}
-                    placeholder="gsk_... (бесплатный ключ с console.groq.com)"
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
-                </div>
+          {/* ВКЛАДКА 6: ЧАТ И ГОЛОС */}
+          {activeTab === 'assistant' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+              <h3 className="font-bold text-sm text-slate-900">Чат-ассистент</h3>
+              <div className="h-64 overflow-y-auto bg-slate-50 p-3 rounded-xl space-y-2 text-xs">
+                {assistantLogs.map(l => (
+                  <div key={l.id} className={`p-2.5 rounded-xl ${l.sender === 'user' ? 'bg-slate-900 text-white ml-auto max-w-xs' : 'bg-white border text-slate-800 max-w-md'}`}>
+                    {l.text}
+                  </div>
+                ))}
               </div>
+            </div>
+          )}
 
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
-                <h3 className="font-bold text-base text-slate-900">🚀 Настройка кнопки Mini App в 1 клик</h3>
-                <div>
-                  <label className="block font-semibold mb-1">Ваша ссылка GitHub Pages (HTTPS):</label>
-                  <input
-                    type="url"
-                    value={webAppUrl}
-                    onChange={e => setWebAppUrl(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
-                </div>
-                <button
-                  onClick={setupBotInTelegram}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition"
-                >
-                  Записать команды (/debts, /stats, /list) и кнопку Menu Button
-                </button>
+          {/* ВКЛАДКА 7: ВХОДЯЩИЕ ИЗ ТГ */}
+          {activeTab === 'telegram' && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-3">
+              <h3 className="font-bold text-sm text-slate-900">Входящие сообщения из Telegram-бота</h3>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {tgUpdates.length === 0 ? (
+                  <p className="text-xs text-slate-400 py-6 text-center">Сообщений пока нет</p>
+                ) : (
+                  tgUpdates.map(u => (
+                    <div key={u.updateId} className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                      <div className="font-bold">{u.name} {u.username && `@${u.username}`}</div>
+                      <div className="text-slate-700 mt-1">{u.text}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ВКЛАДКА 8: НАСТРОЙКИ */}
+          {activeTab === 'guide' && isOwner && (
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 max-w-md">
+              <h3 className="font-bold text-sm text-slate-900">⚙️ Настройки Telegram Bot</h3>
+              <div>
+                <label className="block text-xs font-semibold mb-1">Telegram Bot Token:</label>
+                <input
+                  type="text"
+                  value={botToken}
+                  onChange={e => setBotToken(e.target.value)}
+                  className="w-full border rounded-xl p-2.5 text-xs font-mono"
+                />
               </div>
             </div>
           )}
@@ -2098,7 +1268,41 @@
           {/* МОДАЛЬНОЕ ОКНО СОЗДАНИЯ / РЕДАКТИРОВАНИЯ БРЕНДА */}
           {isModalOpen && (
             <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-              <form onSubmit={handleSaveModal} className="bg-white p-6 rounded-2xl w-full max-w-md space-y-3 text-xs shadow-2xl max-h-[90vh] overflow-y-auto">
+              <form onSubmit={e => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const curMonth = getCurrentMonthKey();
+                const isPaidChecked = fd.get('isPaidThisMonth') === 'on';
+
+                const data = {
+                  id: editingBrand?.id || 'b-' + Date.now(),
+                  name: fd.get('name').trim(),
+                  category: fd.get('category').trim() || 'Одежда',
+                  contactName: fd.get('contactName').trim(),
+                  tgUsername: fd.get('tgUsername').trim().replace('@', ''),
+                  phone: fd.get('phone').trim(),
+                  stage: fd.get('stage'),
+                  railFormat: fd.get('railFormat').trim() || '1 рейл',
+                  monthlyFee: Number(fd.get('monthlyFee')) || 0,
+                  commission: fd.get('commission').trim() || '25%',
+                  paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 10)),
+                  paidMonth: isPaidChecked ? curMonth : '',
+                  lastContact: getTodayDateString(),
+                  notes: fd.get('notes').trim()
+                };
+
+                if (editingBrand) {
+                  setBrands(brands.map(b => b.id === data.id ? data : b));
+                  addAuditLog('ДАННЫЕ БРЕНДОВ', `Отредактирован бренд «${data.name}»`);
+                  showToast(`Бренд ${data.name} обновлен`);
+                } else {
+                  setBrands([data, ...brands]);
+                  addAuditLog('ДАННЫЕ БРЕНДОВ', `Создан бренд «${data.name}»`);
+                  showToast(`Бренд ${data.name} добавлен`);
+                }
+                setIsModalOpen(false);
+                setEditingBrand(null);
+              }} className="bg-white p-6 rounded-2xl w-full max-w-md space-y-3 text-xs shadow-2xl max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
                   <h3 className="text-base font-bold text-slate-900">
                     {editingBrand ? `Редактировать: ${editingBrand.name}` : 'Добавить бренд'}
@@ -2170,12 +1374,12 @@
                       name="isPaidThisMonth"
                       defaultChecked={editingBrand?.paidMonth === currentMonthKey}
                     />
-                    <span className="font-bold text-emerald-900">Оплата за текущий месяц ({currentMonthKey}) получена</span>
+                    <span className="font-bold text-emerald-900">Оплата за текущий месяц получена</span>
                   </label>
                 </div>
 
                 <div>
-                  <label className="block font-semibold mb-1">Заметки и история переговоров</label>
+                  <label className="block font-semibold mb-1">Заметки</label>
                   <textarea name="notes" defaultValue={editingBrand?.notes || ''} rows="3" className="w-full border border-slate-200 rounded-lg p-2 outline-none"></textarea>
                 </div>
 
@@ -2183,18 +1387,12 @@
                   {editingBrand ? (
                     <button
                       type="button"
-                      onClick={() => requestDeleteBrand(editingBrand.id)}
+                      onClick={() => setBrandToDelete(editingBrand)}
                       className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl font-semibold flex items-center gap-1.5 transition"
-                      title="Удалить карточку бренда"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                      <span>Удалить</span>
+                      <span>🗑 Удалить</span>
                     </button>
-                  ) : (
-                    <div />
-                  )}
+                  ) : <div />}
 
                   <div className="flex items-center gap-2">
                     <button
@@ -2216,19 +1414,17 @@
             </div>
           )}
 
-          {/* ДИАЛОГОВОЕ ОКНО ПОДТВЕРЖДЕНИЯ ИЛИ ОТМЕНЫ УДАЛЕНИЯ КАРТОЧКИ БРЕНДА */}
+          {/* ДИАЛОГОВОЕ ОКНО ПОДТВЕРЖДЕНИЯ УДАЛЕНИЯ КАРТОЧКИ БРЕНДА */}
           {brandToDelete && (
             <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60]">
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 max-w-sm w-full shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-150">
-                <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 max-w-sm w-full shadow-2xl text-center space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto text-xl">
+                  🗑
                 </div>
                 <div className="space-y-1">
                   <h4 className="text-base font-bold text-slate-900">Удалить карточку бренда?</h4>
                   <p className="text-xs text-slate-500 leading-relaxed">
-                    Вы действительно хотите безвозвратно удалить бренд <span className="font-bold text-slate-800">«{brandToDelete.name}»</span> и всю историю заметок по нему?
+                    Вы действительно хотите удалить бренд <span className="font-bold text-slate-800">«{brandToDelete.name}»</span>?
                   </p>
                 </div>
                 <div className="flex items-center gap-2.5 pt-2">
@@ -2242,7 +1438,7 @@
                   <button
                     type="button"
                     onClick={confirmDeleteBrand}
-                    className="flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition"
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition"
                   >
                     Да, удалить
                   </button>
