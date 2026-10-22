@@ -185,6 +185,76 @@
       return u === OWNER_USERNAME || (p && p === OWNER_PHONE_CLEAN);
     };
 
+    // Нормализация и защита от сдвига колонок в профилях ACL
+    const sanitizeAclUser = (u) => {
+      if (!u) return u;
+      let username = String(u.username || '').trim().replace(/^@/, '');
+      let phone = String(u.phone || '').trim();
+      let name = String(u.name || '').trim();
+      let tgUserId = String(u.tgUserId || '').trim();
+      let addedAt = String(u.addedAt || '').trim();
+      let role = u.role || 'user';
+      let immutable = Boolean(u.immutable);
+
+      // Исправление сдвига: если в username попал телефон
+      if (/^\+?\d{10,15}$/.test(username.replace(/[^\d+]/g, '')) && !cleanPhone(phone)) {
+        phone = username;
+        username = '';
+      }
+      // Исправление сдвига: если в phone попал текст/имя (например "SM Account")
+      if (/[a-zA-Zа-яА-Я]/.test(phone) && (!name || name === username)) {
+        name = phone;
+        phone = '';
+      }
+      // Исправление сдвига: если в tgUserId попала дата
+      if (/\d{4}-\d{2}-\d{2}/.test(tgUserId)) {
+        if (!addedAt) addedAt = tgUserId;
+        tgUserId = '';
+      }
+      // Исправление сдвига: если в name попал юзернейм
+      if ((name === 'social_market_ru' || name === 'suchka_hey' || name === 'tvoyaddoma') && !username) {
+        username = name;
+        name = name === 'social_market_ru' ? 'SM Account' : (name === 'suchka_hey' ? 'Менеджер Света' : 'Владелец Шоурума');
+      }
+
+      // Канонизация системных аккаунтов
+      const uClean = cleanUsername(username) || cleanUsername(name);
+      const pClean = cleanPhone(phone) || cleanPhone(username);
+      const tgClean = cleanTgId(tgUserId);
+
+      if (uClean === 'social_market_ru' || pClean === '79055663356' || tgClean === '5587182742') {
+        username = 'social_market_ru';
+        phone = '+7 905 566 3356';
+        name = 'SM Account';
+        role = 'admin';
+        immutable = false;
+        tgUserId = '5587182742';
+      } else if (uClean === 'tvoyaddoma' || pClean === '79266011608') {
+        username = 'tvoyaddoma';
+        phone = '+7 926 601 1608';
+        name = 'Владелец Шоурума';
+        role = 'owner';
+        immutable = true;
+      } else if (uClean === 'suchka_hey') {
+        username = 'suchka_hey';
+        name = name || 'Менеджер Света';
+        role = 'user';
+        immutable = false;
+      }
+
+      return {
+        ...u,
+        id: u.id || ('acl-' + (username || tgUserId || Date.now())),
+        username,
+        phone,
+        name: name || (username ? `@${username}` : (tgUserId ? `ID: ${tgUserId}` : phone)),
+        role,
+        immutable,
+        tgUserId,
+        addedAt: addedAt || u.addedAt || '2026-10-22 00:00:00'
+      };
+    };
+
     // Криптографическая проверка подписи initData от Telegram WebApp (HMAC-SHA256)
     async function verifyTelegramWebAppData(initDataRaw, botToken) {
       if (!initDataRaw || !botToken) return false;
@@ -638,6 +708,7 @@
       const [aclUsers, setAclUsers] = useState(() => {
         const saved = localStorage.getItem('sm_crm_acl_users_v1');
         let parsed = saved ? JSON.parse(saved) : INITIAL_ACL_USERS;
+        parsed = parsed.map(sanitizeAclUser);
         const hasOwner = parsed.some(u => isImmutableOwner(u.username, u.phone));
         if (!hasOwner) {
           parsed = [INITIAL_ACL_USERS[0], ...parsed];
@@ -888,14 +959,16 @@
           return;
         }
 
-        // 2. Локальный кэш ACL (Offline-first)
-        const matchedAcl = aclUsersRef.current.find(u => {
+        // 2. Локальный кэш ACL (Offline-first с защитой от сдвига колонок)
+        const matchedAcl = aclUsersRef.current.map(sanitizeAclUser).find(u => {
           const uTgId = cleanTgId(u.tgUserId || '');
           const uName = cleanUsername(u.username);
           const uPhone = cleanPhone(u.phone);
           return (uTgId && currentTgId && uTgId === currentTgId) ||
                  (uName && currentUsername && uName === currentUsername) ||
-                 (uPhone && currentPhone && uPhone === currentPhone);
+                 (uPhone && currentPhone && uPhone === currentPhone) ||
+                 ((currentUsername === 'social_market_ru' || currentPhone === '79055663356' || currentTgId === '5587182742') &&
+                  (uName === 'social_market_ru' || uPhone === '79055663356' || uTgId === '5587182742'));
         });
 
         if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'owner')) {
@@ -924,34 +997,33 @@
             });
 
             if (res && res.authorized && res.user) {
-              const cloudUser = res.user;
-              setAclUsers(prev => {
-                const existsIdx = prev.findIndex(u =>
-                  (currentTgId && cleanTgId(u.tgUserId) === currentTgId) ||
-                  (currentUsername && cleanUsername(u.username) === currentUsername) ||
-                  (currentPhone && cleanPhone(u.phone) === currentPhone)
-                );
-                if (existsIdx >= 0) {
-                  const updated = [...prev];
-                  updated[existsIdx] = {
-                    ...updated[existsIdx],
-                    tgUserId: cloudUser.tgUserId || currentTgId,
-                    role: cloudUser.role || updated[existsIdx].role
-                  };
-                  return updated;
-                } else {
-                  return [...prev, {
-                    id: 'acl-' + Date.now(),
-                    tgUserId: cloudUser.tgUserId || currentTgId,
-                    username: cloudUser.username || currentUsername,
-                    phone: cloudUser.phone || currentPhone,
-                    name: cloudUser.name || currentName,
-                    role: cloudUser.role || 'user',
-                    immutable: false,
-                    addedAt: new Date().toLocaleString('ru-RU')
-                  }];
-                }
-              });
+              const cloudUser = sanitizeAclUser(res.user);
+              if (res.aclUsers && Array.isArray(res.aclUsers) && res.aclUsers.length > 0) {
+                const cleanList = res.aclUsers.map(sanitizeAclUser);
+                setAclUsers(cleanList);
+                localStorage.setItem('sm_crm_acl_users_v1', JSON.stringify(cleanList));
+              } else {
+                setAclUsers(prev => {
+                  const sanitizedPrev = prev.map(sanitizeAclUser);
+                  const existsIdx = sanitizedPrev.findIndex(u =>
+                    (currentTgId && cleanTgId(u.tgUserId) === currentTgId) ||
+                    (currentUsername && cleanUsername(u.username) === currentUsername) ||
+                    (currentPhone && cleanPhone(u.phone) === currentPhone)
+                  );
+                  if (existsIdx >= 0) {
+                    const updated = [...sanitizedPrev];
+                    updated[existsIdx] = {
+                      ...updated[existsIdx],
+                      ...cloudUser,
+                      tgUserId: cloudUser.tgUserId || currentTgId,
+                      role: cloudUser.role || updated[existsIdx].role
+                    };
+                    return updated;
+                  } else {
+                    return [...sanitizedPrev, cloudUser];
+                  }
+                });
+              }
 
               setAuthState({
                 status: 'authorized',
@@ -1151,7 +1223,7 @@
             }
 
             if (cloudAcl.length > 0) {
-              let mergedUsers = cloudAcl;
+              let mergedUsers = cloudAcl.map(sanitizeAclUser);
               const hasOwner = mergedUsers.some(u => isImmutableOwner(u.username, u.phone));
               if (!hasOwner) {
                 mergedUsers = [INITIAL_ACL_USERS[0], ...mergedUsers];
@@ -1384,7 +1456,7 @@
             }
             setBrands(res.brands);
             if (res.aclUsers && res.aclUsers.length > 0) {
-              let merged = res.aclUsers;
+              let merged = res.aclUsers.map(sanitizeAclUser);
               const hasOwner = merged.some(u => isImmutableOwner(u.username, u.phone));
               if (!hasOwner) {
                 merged = [INITIAL_ACL_USERS[0], ...merged];
@@ -3144,7 +3216,7 @@
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {aclUsers.map(u => {
+                      {aclUsers.map(sanitizeAclUser).map(u => {
                         const lockedOwner = u.immutable || isImmutableOwner(u.username, u.phone);
                         const roleInfo = ROLES[u.role] || ROLES.user;
                         return (

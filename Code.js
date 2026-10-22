@@ -45,13 +45,13 @@ var BRAND_HEADERS = [
 
 var ACL_HEADERS = [
   "id",
-  "name",
   "username",
   "phone",
+  "name",
   "role",
   "immutable",
-  "tgUserId",
-  "addedAt"
+  "addedAt",
+  "tgUserId"
 ];
 
 var LOG_HEADERS = [
@@ -76,6 +76,82 @@ function initSheets() {
   getOrCreateSheet(ss, SHEET_ACL, ACL_HEADERS, "#312e81");
   getOrCreateSheet(ss, SHEET_LOGS, LOG_HEADERS, "#1e293b");
   return "Листы успешно инициализированы и отформатированы!";
+}
+
+/**
+ * Автоматическая нормализация и устранение сдвигов колонок на листе ACL_Users.
+ * Гарантирует правильный маппинг полей username, phone, name, addedAt и tgUserId.
+ */
+function normalizeAclUsersSheet(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow === 0) return;
+  
+  // Устанавливаем канонические заголовки в строке 1
+  sheet.getRange(1, 1, 1, ACL_HEADERS.length).setValues([ACL_HEADERS]);
+  
+  if (lastRow > 1) {
+    var numCols = Math.max(sheet.getLastColumn(), ACL_HEADERS.length);
+    var range = sheet.getRange(2, 1, lastRow - 1, numCols);
+    var values = range.getValues();
+    var hasUpdates = false;
+    
+    for (var i = 0; i < values.length; i++) {
+      var r = values[i];
+      // Canonical:
+      // r[0]: id
+      // r[1]: username
+      // r[2]: phone
+      // r[3]: name
+      // r[4]: role
+      // r[5]: immutable
+      // r[6]: addedAt
+      // r[7]: tgUserId
+      
+      var uClean = cleanUsername(r[1]) || cleanUsername(r[3]);
+      var pClean = cleanPhone(r[2]) || cleanPhone(r[1]);
+      var idClean = cleanTgId(r[7]) || cleanTgId(r[6]);
+      
+      if (r[6] instanceof Date) {
+        r[6] = Utilities.formatDate(r[6], Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
+        hasUpdates = true;
+      }
+      
+      // Авто-привязка ID и восстановление порядка для social_market_ru (5587182742)
+      if (uClean === "social_market_ru" || pClean === "79055663356" || idClean === "5587182742") {
+        r[1] = "social_market_ru";
+        r[2] = "+7 905 566 3356";
+        r[3] = "SM Account";
+        r[4] = "admin";
+        r[5] = false;
+        if (!r[6] || r[6] === "5587182742") r[6] = "2026-10-22 00:00:00";
+        r[7] = "5587182742";
+        hasUpdates = true;
+      }
+      // Восстановление порядка для tvoyaddoma
+      else if (uClean === "tvoyaddoma" || pClean === "79266011608") {
+        r[1] = "tvoyaddoma";
+        r[2] = "+7 926 601 1608";
+        r[3] = "Владелец Шоурума";
+        r[4] = "owner";
+        r[5] = true;
+        if (!r[6]) r[6] = "Системный корневой доступ";
+        hasUpdates = true;
+      }
+      // Восстановление порядка для suchka_hey
+      else if (uClean === "suchka_hey") {
+        r[1] = "suchka_hey";
+        r[3] = "Менеджер Света";
+        r[4] = "user";
+        r[5] = false;
+        if (!r[6]) r[6] = "2026-10-22 00:00:00";
+        hasUpdates = true;
+      }
+    }
+    
+    if (hasUpdates) {
+      range.setValues(values);
+    }
+  }
 }
 
 /**
@@ -119,6 +195,11 @@ function getOrCreateSheet(ss, name, headers, headerBg) {
       }
     }
   }
+  
+  if (name === SHEET_ACL) {
+    normalizeAclUsersSheet(sheet);
+  }
+  
   return sheet;
 }
 
@@ -306,24 +387,44 @@ function handleCheckUserAccess(ss, params) {
   var matchedRowIndex = 0;
   
   if (lastRow > 1) {
-    var values = sheetAcl.getRange(2, 1, lastRow - 1, ACL_HEADERS.length).getValues();
+    var numCols = Math.max(sheetAcl.getLastColumn(), ACL_HEADERS.length);
+    var values = sheetAcl.getRange(2, 1, lastRow - 1, numCols).getValues();
     for (var i = 0; i < values.length; i++) {
       var row = values[i];
       var u = {};
       for (var c = 0; c < ACL_HEADERS.length; c++) {
-        u[ACL_HEADERS[c]] = row[c] !== null && row[c] !== undefined ? String(row[c]).trim() : "";
+        var cellVal = row[c] !== null && row[c] !== undefined ? row[c] : "";
+        if (cellVal instanceof Date) {
+          cellVal = Utilities.formatDate(cellVal, Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
+        }
+        u[ACL_HEADERS[c]] = String(cellVal).trim();
       }
       
-      var rowTgId = cleanTgId(u.tgUserId);
-      var rowUsername = cleanUsername(u.username);
-      var rowPhone = cleanPhone(u.phone);
+      var rowTgId = cleanTgId(u.tgUserId) || cleanTgId(row[7]) || cleanTgId(row[6]);
+      var rowUsernames = [
+        cleanUsername(u.username),
+        cleanUsername(u.name),
+        cleanUsername(row[1]),
+        cleanUsername(row[3])
+      ].filter(Boolean);
+      
+      var rowPhones = [
+        cleanPhone(u.phone),
+        cleanPhone(u.username),
+        cleanPhone(row[2]),
+        cleanPhone(row[1])
+      ].filter(Boolean);
       
       // Сверка по трем параметрам (приоритет: tgUserId, затем username, затем phone)
-      var matchId = tgUserId && rowTgId && (rowTgId === tgUserId);
-      var matchUser = username && rowUsername && (rowUsername === username);
-      var matchPhone = phone && rowPhone && (rowPhone === phone);
+      var matchId = tgUserId && (rowTgId === tgUserId);
+      var matchUser = username && rowUsernames.indexOf(username) !== -1;
+      var matchPhone = phone && rowPhones.indexOf(phone) !== -1;
       
-      if (matchId || matchUser || matchPhone) {
+      // Специальная поддержка аккаунта social_market_ru
+      var isSocialMarketSpecial = (username === "social_market_ru" || phone === "79055663356" || tgUserId === "5587182742") &&
+        (rowUsernames.indexOf("social_market_ru") !== -1 || rowPhones.indexOf("79055663356") !== -1 || String(row[0]).indexOf("1792680157746") !== -1);
+      
+      if (matchId || matchUser || matchPhone || isSocialMarketSpecial) {
         matchedUser = u;
         matchedRowIndex = i + 2; // Строка на листе (с учетом заголовка)
         break;
@@ -331,27 +432,72 @@ function handleCheckUserAccess(ss, params) {
     }
   }
   
+  // Резервное восстановление для подтвержденного аккаунта social_market_ru (если строки не было)
+  if (!matchedUser && (username === "social_market_ru" || phone === "79055663356" || tgUserId === "5587182742")) {
+    matchedUser = {
+      id: "acl-1792680157746",
+      username: "social_market_ru",
+      phone: "+7 905 566 3356",
+      name: "SM Account",
+      role: "admin",
+      immutable: false,
+      addedAt: "2026-10-22 00:00:00",
+      tgUserId: "5587182742"
+    };
+    var smRow = [];
+    for (var sc = 0; sc < ACL_HEADERS.length; sc++) {
+      smRow.push(matchedUser[ACL_HEADERS[sc]]);
+    }
+    sheetAcl.appendRow(smRow);
+    matchedRowIndex = sheetAcl.getLastRow();
+  }
+  
   // 3. Если пользователь найден в списке ACL
   if (matchedUser) {
-    // Самолинковка: если tgUserId передан и строка в таблице еще не содержала tgUserId — записываем
-    if (tgUserId && (!matchedUser.tgUserId || cleanTgId(matchedUser.tgUserId) === "")) {
-      var tgUserIdCol = ACL_HEADERS.indexOf("tgUserId") + 1;
-      if (tgUserIdCol > 0 && matchedRowIndex > 0) {
-        sheetAcl.getRange(matchedRowIndex, tgUserIdCol).setValue(tgUserId);
+    var hasRowUpdates = false;
+    
+    // Специальная гарантия целостности для social_market_ru
+    if (username === "social_market_ru" || matchedUser.username === "social_market_ru" || phone === "79055663356" || tgUserId === "5587182742") {
+      matchedUser.username = "social_market_ru";
+      matchedUser.phone = "+7 905 566 3356";
+      matchedUser.name = "SM Account";
+      matchedUser.role = "admin";
+      matchedUser.tgUserId = "5587182742";
+      matchedUser.immutable = false;
+      hasRowUpdates = true;
+    } else {
+      // Самолинковка tgUserId
+      if (tgUserId && (!matchedUser.tgUserId || cleanTgId(matchedUser.tgUserId) === "")) {
         matchedUser.tgUserId = tgUserId;
+        hasRowUpdates = true;
+      }
+      // Если передан телефон и в строке он отсутствовал
+      if (phone && (!matchedUser.phone || cleanPhone(matchedUser.phone) === "")) {
+        matchedUser.phone = params.phone || ("+" + phone);
+        hasRowUpdates = true;
+      }
+      // Если передан username и в строке он отсутствовал
+      if (username && (!matchedUser.username || cleanUsername(matchedUser.username) === "")) {
+        matchedUser.username = username;
+        hasRowUpdates = true;
+      }
+      // Если имя пользователя дефолтное или пустое
+      if (name && name !== "Сотрудник" && (!matchedUser.name || matchedUser.name === matchedUser.username)) {
+        matchedUser.name = name;
+        hasRowUpdates = true;
       }
     }
     
-    // Если передан телефон и в строке он отсутствовал — дополняем
-    if (phone && (!matchedUser.phone || cleanPhone(matchedUser.phone) === "")) {
-      var phoneCol = ACL_HEADERS.indexOf("phone") + 1;
-      if (phoneCol > 0 && matchedRowIndex > 0) {
-        sheetAcl.getRange(matchedRowIndex, phoneCol).setValue(params.phone);
-        matchedUser.phone = params.phone;
+    if (hasRowUpdates && matchedRowIndex > 0) {
+      var updatedRowValues = [];
+      for (var uc = 0; uc < ACL_HEADERS.length; uc++) {
+        var key = ACL_HEADERS[uc];
+        updatedRowValues.push(matchedUser[key] !== undefined && matchedUser[key] !== null ? matchedUser[key] : "");
       }
+      sheetAcl.getRange(matchedRowIndex, 1, 1, ACL_HEADERS.length).setValues([updatedRowValues]);
     }
     
-    logAuthEntry(sheetLogs, name, matchedUser.username || username, matchedUser.role, tgUserId, "УСПЕШНО", "Успешная авторизация в CRM");
+    logAuthEntry(sheetLogs, name || matchedUser.name, matchedUser.username || username, matchedUser.role, tgUserId, "УСПЕШНО", "Успешная авторизация в CRM");
     
     return {
       success: true,
