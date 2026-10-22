@@ -2,17 +2,21 @@
  * ============================================================================
  * SHOWROOM BRAND CRM — Google Apps Script Backend (Web App API)
  * ============================================================================
- * Версия: 1.0 (Zero-Data-Loss Architecture)
+ * Версия: 2.0 (Zero-Deadlock Cloud Auth, Auto-Linking & Access Audit)
  * 
  * Назначение:
  * Полноценный REST API бэкенд для Telegram Mini App (Showroom CRM).
- * Обеспечивает защищенное хранение данных брендов, пользователей ACL и
- * журнала аудита в Google Таблице с автоматической инициализацией структуры.
+ * Обеспечивает:
+ * 1. Предварительную проверку доступа (checkAccess) для новых сотрудников,
+ *    решающую проблему пустого localStorage.
+ * 2. Авторизацию по Telegram ID, @username и подтвержденному номеру телефона.
+ * 3. Автоматическую самолинковку числового tgUserId при первом совпадении.
+ * 4. Детальное логирование попыток авторизации и отказов в листе Audit_Logs.
+ * 5. Защищенное хранение брендов, пользователей ACL и журнала аудита.
  * ============================================================================
  */
 
 // Секретный ключ для защиты API (должен совпадать с ключом в настройках CRM)
-// При необходимости вы можете изменить его на свой пароль.
 var API_SECRET_KEY = "SHOWROOM_CRM_SECRET_2026";
 
 // Имена листов в Google Таблице
@@ -20,7 +24,7 @@ var SHEET_BRANDS = "Brands";
 var SHEET_ACL = "ACL_Users";
 var SHEET_LOGS = "Audit_Logs";
 
-// Заголовки столбцов (в строгом соответствии с архитектурными требованиями)
+// Заголовки столбцов
 var BRAND_HEADERS = [
   "id",
   "name",
@@ -41,11 +45,12 @@ var BRAND_HEADERS = [
 
 var ACL_HEADERS = [
   "id",
+  "name",
   "username",
   "phone",
-  "name",
   "role",
   "immutable",
+  "tgUserId",
   "addedAt"
 ];
 
@@ -56,13 +61,14 @@ var LOG_HEADERS = [
   "actorUsername",
   "actorRole",
   "category",
-  "action"
+  "action",
+  "tgUserId"
 ];
 
 /**
  * Инициализация и форматирование всех листов таблицы.
- * Запустите эту функцию один раз вручную в редакторе, либо она выполнится
- * автоматически при первом обращении к API.
+ * Запустите эту функцию один раз вручную в редакторе Google Таблицы,
+ * либо она выполнится автоматически при первом запросе к API.
  */
 function initSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -96,6 +102,22 @@ function getOrCreateSheet(ss, name, headers, headerBg) {
     for (var i = 1; i <= headers.length; i++) {
       sheet.autoResizeColumn(i);
     }
+  } else {
+    // Проверяем актуальность колонок: если в существующей таблице не хватает колонок (например, tgUserId), добавляем их
+    var currentLastCol = sheet.getLastColumn();
+    if (currentLastCol > 0 && currentLastCol < headers.length) {
+      var existingHeaders = sheet.getRange(1, 1, 1, currentLastCol).getValues()[0];
+      for (var h = currentLastCol; h < headers.length; h++) {
+        var missingHeader = headers[h];
+        if (existingHeaders.indexOf(missingHeader) === -1) {
+          sheet.getRange(1, h + 1).setValue(missingHeader)
+            .setBackground(headerBg || "#0f172a")
+            .setFontColor("#ffffff")
+            .setFontWeight("bold")
+            .setHorizontalAlignment("center");
+        }
+      }
+    }
   }
   return sheet;
 }
@@ -117,6 +139,24 @@ function checkAuth(apiKey) {
 }
 
 /**
+ * Нормализаторы данных
+ */
+function cleanUsername(u) {
+  if (!u) return "";
+  return String(u).trim().replace(/^@/, "").replace(/^https?:\/\/(t\.me\/)?/i, "").toLowerCase();
+}
+
+function cleanPhone(p) {
+  if (!p) return "";
+  return String(p).replace(/[^\d]/g, "");
+}
+
+function cleanTgId(id) {
+  if (!id) return "";
+  return String(id).trim();
+}
+
+/**
  * Чтение данных с листа в виде массива объектов
  */
 function readSheetData(sheet, headers) {
@@ -135,7 +175,7 @@ function readSheetData(sheet, headers) {
     for (var c = 0; c < numCols; c++) {
       var val = row[c];
       if (val instanceof Date) {
-        val = Utilities.formatDate(val, Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd");
+        val = Utilities.formatDate(val, Session.getScriptTimeZone() || "GMT+3", "yyyy-MM-dd HH:mm:ss");
       }
       obj[headers[c]] = (val !== null && val !== undefined) ? val : "";
       if (val !== "" && val !== null && val !== undefined) {
@@ -143,7 +183,7 @@ function readSheetData(sheet, headers) {
       }
     }
     
-    if (hasContent && obj.id) {
+    if (hasContent && (obj.id || obj.name || obj.username)) {
       if (obj.monthlyFee !== undefined && obj.monthlyFee !== "") {
         obj.monthlyFee = Number(obj.monthlyFee) || 0;
       }
@@ -193,7 +233,152 @@ function batchWriteSheet(sheet, headers, items) {
 }
 
 /**
- * Обработчик GET-запросов (чтение всех данных или healthcheck)
+ * Запись события авторизации в лист Audit_Logs
+ */
+function logAuthEntry(sheetLogs, name, username, role, tgUserId, status, details) {
+  try {
+    var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+3", "dd.MM.yyyy, HH:mm:ss");
+    var id = "auth-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6);
+    var actionText = "";
+    
+    if (status === "УСПЕШНО") {
+      actionText = "Успешный вход: " + (name || "Сотрудник") + " (@" + (username || "—") + ", ID: " + (tgUserId || "—") + ", роль: " + role + ")";
+    } else if (status === "ЗАПРОС") {
+      actionText = "📩 Запрос доступа в CRM: " + (name || "Пользователь") + " (@" + (username || "—") + ", ID: " + (tgUserId || "—") + ") — " + details;
+    } else {
+      actionText = "⚠️ Попытка несанкционированного входа: " + (name || "Пользователь") + " (@" + (username || "—") + ", ID: " + (tgUserId || "—") + ") — " + details;
+    }
+    
+    sheetLogs.appendRow([
+      id,
+      timestamp,
+      name || "Пользователь",
+      username || "—",
+      role || "none",
+      "АВТОРИЗАЦИЯ",
+      actionText,
+      tgUserId || ""
+    ]);
+  } catch (err) {
+    console.error("Ошибка добавления лога авторизации: " + err.toString());
+  }
+}
+
+/**
+ * Центральный метод проверки доступа (Pre-Auth)
+ * Ищет совпадение по tgUserId, @username или номеру телефона.
+ * При первом совпадении автоматически привязывает числовой tgUserId к строке в ACL_Users.
+ */
+function handleCheckUserAccess(ss, params) {
+  var sheetAcl = getOrCreateSheet(ss, SHEET_ACL, ACL_HEADERS, "#312e81");
+  var sheetLogs = getOrCreateSheet(ss, SHEET_LOGS, LOG_HEADERS, "#1e293b");
+  
+  var tgUserId = cleanTgId(params.tgUserId);
+  var username = cleanUsername(params.username);
+  var phone = cleanPhone(params.phone);
+  var name = String(params.name || "").trim() || "Сотрудник";
+  
+  // 1. Проверка Неоспоримого Владельца (tvoyaddoma / 79266011608)
+  var isOwner = (username === "tvoyaddoma") || (phone === "79266011608");
+  if (isOwner) {
+    var ownerObj = {
+      id: "acl-owner",
+      name: "Владелец",
+      username: "tvoyaddoma",
+      phone: "+7 926 601 1608",
+      role: "owner",
+      immutable: true,
+      tgUserId: tgUserId || ""
+    };
+    logAuthEntry(sheetLogs, name, "tvoyaddoma", "owner", tgUserId, "УСПЕШНО", "Вход Неоспоримого Владельца");
+    return {
+      success: true,
+      authorized: true,
+      role: "owner",
+      user: ownerObj,
+      aclUsers: readSheetData(sheetAcl, ACL_HEADERS)
+    };
+  }
+  
+  // 2. Поиск в таблице ACL_Users
+  var lastRow = sheetAcl.getLastRow();
+  var matchedUser = null;
+  var matchedRowIndex = 0;
+  
+  if (lastRow > 1) {
+    var values = sheetAcl.getRange(2, 1, lastRow - 1, ACL_HEADERS.length).getValues();
+    for (var i = 0; i < values.length; i++) {
+      var row = values[i];
+      var u = {};
+      for (var c = 0; c < ACL_HEADERS.length; c++) {
+        u[ACL_HEADERS[c]] = row[c] !== null && row[c] !== undefined ? String(row[c]).trim() : "";
+      }
+      
+      var rowTgId = cleanTgId(u.tgUserId);
+      var rowUsername = cleanUsername(u.username);
+      var rowPhone = cleanPhone(u.phone);
+      
+      // Сверка по трем параметрам (приоритет: tgUserId, затем username, затем phone)
+      var matchId = tgUserId && rowTgId && (rowTgId === tgUserId);
+      var matchUser = username && rowUsername && (rowUsername === username);
+      var matchPhone = phone && rowPhone && (rowPhone === phone);
+      
+      if (matchId || matchUser || matchPhone) {
+        matchedUser = u;
+        matchedRowIndex = i + 2; // Строка на листе (с учетом заголовка)
+        break;
+      }
+    }
+  }
+  
+  // 3. Если пользователь найден в списке ACL
+  if (matchedUser) {
+    // Самолинковка: если tgUserId передан и строка в таблице еще не содержала tgUserId — записываем
+    if (tgUserId && (!matchedUser.tgUserId || cleanTgId(matchedUser.tgUserId) === "")) {
+      var tgUserIdCol = ACL_HEADERS.indexOf("tgUserId") + 1;
+      if (tgUserIdCol > 0 && matchedRowIndex > 0) {
+        sheetAcl.getRange(matchedRowIndex, tgUserIdCol).setValue(tgUserId);
+        matchedUser.tgUserId = tgUserId;
+      }
+    }
+    
+    // Если передан телефон и в строке он отсутствовал — дополняем
+    if (phone && (!matchedUser.phone || cleanPhone(matchedUser.phone) === "")) {
+      var phoneCol = ACL_HEADERS.indexOf("phone") + 1;
+      if (phoneCol > 0 && matchedRowIndex > 0) {
+        sheetAcl.getRange(matchedRowIndex, phoneCol).setValue(params.phone);
+        matchedUser.phone = params.phone;
+      }
+    }
+    
+    logAuthEntry(sheetLogs, name, matchedUser.username || username, matchedUser.role, tgUserId, "УСПЕШНО", "Успешная авторизация в CRM");
+    
+    return {
+      success: true,
+      authorized: true,
+      role: matchedUser.role,
+      user: matchedUser,
+      aclUsers: readSheetData(sheetAcl, ACL_HEADERS)
+    };
+  }
+  
+  // 4. Пользователь НЕ найден в списке ACL
+  var details = "Пользователь отсутствует в списке разрешенных участников ACL";
+  if (phone) details += " (проверен тел: +" + phone + ")";
+  logAuthEntry(sheetLogs, name, username, "none", tgUserId, "ОТКАЗ", details);
+  
+  return {
+    success: true,
+    authorized: false,
+    reason: "not_in_acl",
+    tgUserId: tgUserId,
+    username: username,
+    message: "Доступ не подтвержден. Пользователь не внесен в список разрешенного доступа CRM."
+  };
+}
+
+/**
+ * Обработчик GET-запросов (чтение всех данных или healthcheck / checkAccess)
  */
 function doGet(e) {
   try {
@@ -203,6 +388,14 @@ function doGet(e) {
     
     if (!checkAuth(apiKey)) {
       return createJsonResponse({ success: false, error: "Unauthorized: Неверный API_SECRET_KEY" });
+    }
+    
+    var action = params.action;
+    
+    // Поддержка быстрой проверки доступа через GET (для моментального отклика)
+    if (action === "checkAccess" || action === "checkUserAccess") {
+      var authResult = handleCheckUserAccess(ss, params);
+      return createJsonResponse(authResult);
     }
     
     var sheetBrands = getOrCreateSheet(ss, SHEET_BRANDS, BRAND_HEADERS, "#0f172a");
@@ -229,12 +422,11 @@ function doGet(e) {
 }
 
 /**
- * Обработчик POST-запросов (миграция, синхронизация, аудит)
+ * Обработчик POST-запросов (миграция, синхронизация, авторизация, аудит)
  */
 function doPost(e) {
   var lock = LockService.getScriptLock();
   try {
-    // Ожидание лока до 15 секунд для предотвращения гонок данных
     lock.waitLock(15000);
     
     var raw = e && e.postData && e.postData.contents ? e.postData.contents : "{}";
@@ -256,7 +448,27 @@ function doPost(e) {
     var sheetAcl = getOrCreateSheet(ss, SHEET_ACL, ACL_HEADERS, "#312e81");
     var sheetLogs = getOrCreateSheet(ss, SHEET_LOGS, LOG_HEADERS, "#1e293b");
     
-    // МЕТОД 1: getAllData — отдает все 3 массива объектов за один запрос
+    // МЕТОД 0: checkAccess / checkUserAccess — проверка прав и самолинковка tgUserId
+    if (action === "checkAccess" || action === "checkUserAccess") {
+      var authResult = handleCheckUserAccess(ss, payload);
+      return createJsonResponse(authResult);
+    }
+    
+    // МЕТОД 0.1: requestAccess — запрос доступа от неавторизованного сотрудника
+    if (action === "requestAccess") {
+      var reqName = payload.name || "Пользователь";
+      var reqUser = payload.username || "—";
+      var reqId = cleanTgId(payload.tgUserId);
+      var reqPhone = payload.phone || "—";
+      
+      logAuthEntry(sheetLogs, reqName, reqUser, "none", reqId, "ЗАПРОС", "Запрос на добавление в CRM (тел: " + reqPhone + ")");
+      return createJsonResponse({
+        success: true,
+        message: "Запрос доступа успешно зафиксирован в журнале аудита"
+      });
+    }
+    
+    // МЕТОД 1: getAllData — отдает все 3 массива объектов
     if (action === "getAllData") {
       var brands = readSheetData(sheetBrands, BRAND_HEADERS);
       var aclUsers = readSheetData(sheetAcl, ACL_HEADERS);
@@ -297,7 +509,7 @@ function doPost(e) {
       });
     }
     
-    // МЕТОД 3: syncBrands — создание, обновление, удаление или пакетное сохранение карточек
+    // МЕТОД 3: syncBrands — создание, обновление, удаление карточек
     if (action === "syncBrands") {
       if (Array.isArray(payload.brands)) {
         var bCount = batchWriteSheet(sheetBrands, BRAND_HEADERS, payload.brands);
@@ -305,7 +517,7 @@ function doPost(e) {
       }
       
       var brand = payload.brand;
-      var op = payload.operation || "update"; // 'create' | 'update' | 'delete'
+      var op = payload.operation || "update";
       if (!brand || !brand.id) {
         return createJsonResponse({ success: false, error: "Требуется объект brand с полем id" });
       }
