@@ -19,13 +19,58 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <style>
-    body {
+    :root {
+      --tg-safe-top: var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)));
+      --tg-safe-bottom: var(--tg-content-safe-area-inset-bottom, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+      --tg-safe-left: var(--tg-safe-area-inset-left, env(safe-area-inset-left, 0px));
+      --tg-safe-right: var(--tg-safe-area-inset-right, env(safe-area-inset-right, 0px));
+    }
+
+    html, body {
       margin: 0;
+      padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
+      overscroll-behavior-y: none; /* Защита от закрытия шторки Telegram при свайпе */
+      background-color: #020617;
+      min-height: 100vh;
+      min-height: var(--tg-viewport-height, 100vh);
     }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #f1f5f9; }
+
+    /* Поддержка SafeArea и адаптивных отступов для всех режимов Telegram SDK */
+    .tma-safe-area {
+      padding-top: max(
+        10px,
+        calc(var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px))) + 8px)
+      );
+      padding-bottom: max(
+        14px,
+        calc(var(--tg-content-safe-area-inset-bottom, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))) + 14px)
+      );
+      padding-left: max(
+        10px,
+        calc(var(--tg-safe-area-inset-left, env(safe-area-inset-left, 0px)) + 10px)
+      );
+      padding-right: max(
+        10px,
+        calc(var(--tg-safe-area-inset-right, env(safe-area-inset-right, 0px)) + 10px)
+      );
+      min-height: 100vh;
+      min-height: var(--tg-viewport-height, 100vh);
+      box-sizing: border-box;
+    }
+
+    /* Плавный горизонтальный скролл без видимого скроллбара */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
   </style>
@@ -575,6 +620,9 @@
       const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
       const [searchQuery, setSearchQuery] = useState('');
       const [stageFilter, setStageFilter] = useState('all');
+      const [isFinanceCollapsed, setIsFinanceCollapsed] = useState(() => {
+        return window.innerWidth < 640;
+      });
       const [isModalOpen, setIsModalOpen] = useState(false);
       const [editingBrand, setEditingBrand] = useState(null);
       const [brandToDelete, setBrandToDelete] = useState(null);
@@ -684,7 +732,25 @@
           const tg = window.Telegram?.WebApp;
           if (tg) {
             tg.ready();
-            tg.expand();
+            try { tg.expand(); } catch (e) {}
+
+            // Отключение закрытия шторки свайпом вниз при прокрутке внутри Mini App (API 7.7+)
+            if (typeof tg.disableVerticalSwipes === 'function') {
+              try { tg.disableVerticalSwipes(); } catch (e) {}
+            }
+
+            // Защита от случайного закрытия
+            if (typeof tg.enableClosingConfirmation === 'function') {
+              try { tg.enableClosingConfirmation(); } catch (e) {}
+            }
+
+            // Установка цвета фона и шапки для системного статус-бара iOS
+            if (typeof tg.setHeaderColor === 'function') {
+              try { tg.setHeaderColor('#020617'); } catch (e) {}
+            }
+            if (typeof tg.setBackgroundColor === 'function') {
+              try { tg.setBackgroundColor('#020617'); } catch (e) {}
+            }
           }
 
           const initDataRaw = tg?.initData || '';
@@ -749,6 +815,30 @@
 
         authenticateTelegramSession();
       }, [botToken, aclUsers]);
+
+      // --- ПОДДЕРЖКА ДИНАМИЧЕСКИХ РЕЖИМОВ TELEGRAM SDK (FULLSCREEN, FULLSIZE, COMPACT) ---
+      useEffect(() => {
+        const tg = window.Telegram?.WebApp;
+        if (!tg) return;
+
+        const handleViewportChange = () => {
+          if (tg.isExpanded === false) {
+            try { tg.expand(); } catch (e) {}
+          }
+        };
+
+        tg.onEvent?.('viewportChanged', handleViewportChange);
+        tg.onEvent?.('safeAreaChanged', handleViewportChange);
+        tg.onEvent?.('contentSafeAreaChanged', handleViewportChange);
+        window.addEventListener('resize', handleViewportChange);
+
+        return () => {
+          tg.offEvent?.('viewportChanged', handleViewportChange);
+          tg.offEvent?.('safeAreaChanged', handleViewportChange);
+          tg.offEvent?.('contentSafeAreaChanged', handleViewportChange);
+          window.removeEventListener('resize', handleViewportChange);
+        };
+      }, []);
 
       // --- СТРАТЕГИЯ STALE-WHILE-REVALIDATE + ANTI-WIPE GUARD ---
       useEffect(() => {
@@ -1712,7 +1802,7 @@
       // =========================================================
       if (authState.status === 'checking') {
         return (
-          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none">
+          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area">
             <div className="text-slate-500 text-xs font-mono tracking-widest uppercase animate-pulse">
               Проверка криптографической подписи Telegram API...
             </div>
@@ -1722,7 +1812,7 @@
 
       if (authState.status !== 'authorized') {
         return (
-          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none">
+          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl px-8 py-7 shadow-2xl text-center max-w-xs w-full">
               <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto mb-3 text-xl font-bold">
                 🔒
@@ -1753,47 +1843,122 @@
 
       const activeMoreTabObj = moreTabsList.find(t => t.id === activeTab);
 
+      const receivedPercent = financeStats.plannedRevenue > 0
+        ? Math.round((financeStats.receivedRevenue / financeStats.plannedRevenue) * 100)
+        : 0;
+
+      const visibleStages = stageFilter === 'all'
+        ? STAGES
+        : STAGES.filter(s => s.id === stageFilter);
+
       // =========================================================
       // ОСНОВНОЙ ИНТЕРФЕЙС
       // =========================================================
       return (
-        <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto p-3 sm:p-6">
+        <div className="tma-safe-area bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto w-full">
           {/* Всплывающее уведомление */}
           {toast && (
-            <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700 animate-in fade-in duration-200">
+            <div className="fixed bottom-6 right-4 left-4 sm:left-auto z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700 animate-in fade-in duration-200 text-center sm:text-left">
               ⚡️ {toast}
             </div>
           )}
 
           {/* БАННЕР ПЕРВИЧНОЙ МИГРАЦИИ (ANTI-WIPE GUARD) */}
           {cloudStatus === 'needs_migration' && !isMigrationModalOpen && (
-            <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
-              <div className="flex items-center gap-2.5 text-xs text-amber-900">
-                <span className="text-xl">☁️</span>
+            <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3 sm:p-4 mb-2.5 sm:mb-4 flex flex-wrap items-center justify-between gap-2.5 shadow-xs">
+              <div className="flex items-center gap-2 text-xs text-amber-900">
+                <span className="text-lg">☁️</span>
                 <div>
                   <span className="font-bold">Google Таблица подключена, но пока пуста. </span>
-                  <span>В CRM сохранено {brands.length} брендов. Требуется первичная выгрузка базы в облако.</span>
+                  <span className="hidden sm:inline">В CRM сохранено {brands.length} брендов. Требуется первичная выгрузка базы в облако.</span>
+                  <span className="sm:hidden">В базе {brands.length} брендов. Требуется выгрузка.</span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={openBackupModal}
-                  className="px-3 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-semibold"
+                  className="px-2.5 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-semibold"
                 >
-                  📥 Бэкап JSON
+                  📥 Бэкап
                 </button>
                 <button
                   onClick={() => setIsMigrationModalOpen(true)}
-                  className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-semibold shadow-xs"
+                  className="px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-semibold shadow-xs"
                 >
-                  ⬆️ Начать миграцию
+                  ⬆️ Выгрузить в облако
                 </button>
               </div>
             </div>
           )}
 
-          {/* Шапка */}
-          <header className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
+          {/* --- МОБИЛЬНАЯ УЛЬТРАКОМПАКТНАЯ ШАПКА (< 640px) --- */}
+          <header className="sm:hidden flex items-center justify-between gap-2 bg-white px-3 py-2 rounded-2xl border border-slate-200 shadow-xs mb-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
+                SM
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <h1 className="text-xs font-bold truncate">Showroom CRM</h1>
+                  {cloudStatus === 'synced' && (
+                    <span title="Облако синхронизировано" className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                  )}
+                  {cloudStatus === 'syncing' && (
+                    <span title="Синхронизация..." className="w-2 h-2 rounded-full bg-amber-500 animate-spin shrink-0" />
+                  )}
+                  {cloudStatus === 'offline' && (
+                    <span title="Офлайн-режим" className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+                  )}
+                  {cloudStatus === 'needs_migration' && (
+                    <button
+                      onClick={() => setIsMigrationModalOpen(true)}
+                      className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-300 animate-pulse shrink-0"
+                    >
+                      ⬆️ Миграция
+                    </button>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-400 truncate">
+                  @{authState.tgUser?.username || OWNER_USERNAME} • {currentRoleObj.title}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => fetchBotUpdates(false)}
+                className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition"
+                title="Обновить входящие Telegram"
+              >
+                {isSyncing ? '⏳' : '🔄'}
+              </button>
+              {isOwner && (
+                <button
+                  onClick={openBackupModal}
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition"
+                  title="Скачать бэкап JSON"
+                >
+                  📥
+                </button>
+              )}
+              <button
+                onClick={() => sendDailyReminderToTelegram(true)}
+                className="w-8 h-8 flex items-center justify-center bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl text-xs font-semibold transition"
+                title="Отправить сводку долгов в ТГ"
+              >
+                🔔
+              </button>
+              <button
+                onClick={() => { setEditingBrand(null); setIsModalOpen(true); }}
+                className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition"
+              >
+                <span>+ Бренд</span>
+              </button>
+            </div>
+          </header>
+
+          {/* --- ДЕСКТОПНАЯ ПОЛНОРАЗМЕРНАЯ ШАПКА (>= 640px) --- */}
+          <header className="hidden sm:flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-base shadow-xs">
                 SM
@@ -1805,7 +1970,6 @@
                     {currentRoleObj.title}: @{authState.tgUser?.username || OWNER_USERNAME}
                   </span>
 
-                  {/* ИНДИКАЦИЯ СТАТУСА ОБЛАКА В ШАПКЕ */}
                   {cloudStatus === 'synced' && (
                     <span
                       title="Все данные синхронизированы с Google Таблицей"
@@ -1887,27 +2051,27 @@
 
           {/* Баннер просроченных оплат */}
           {financeStats.overdueBrands.length > 0 && (
-            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 text-xs text-rose-900">
-                <span className="text-base">🚨</span>
+            <div className="bg-rose-50 border border-rose-200 rounded-xl sm:rounded-2xl p-2.5 sm:p-3.5 mb-2 sm:mb-4 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 text-xs text-rose-900">
+                <span className="text-base shrink-0">🚨</span>
                 <div>
-                  <span className="font-bold">Просрочена ежемесячная оплата ({financeStats.overdueBrands.length} шт. на сумму {financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽): </span>
+                  <span className="font-bold">Просрочена оплата ({financeStats.overdueBrands.length} шт. на {financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽): </span>
                   <span>
-                    {financeStats.overdueBrands.map(b => `${b.name} (до ${b.paymentDay} числа)`).join(', ')}
+                    {financeStats.overdueBrands.map(b => `${b.name} (до ${b.paymentDay || 10})`).join(', ')}
                   </span>
                 </div>
               </div>
               <button
                 onClick={() => setActiveTab('finance')}
-                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold"
+                className="px-2.5 py-1 sm:px-3 sm:py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold shrink-0"
               >
-                Перейти к оплатам
+                К оплатам →
               </button>
             </div>
           )}
 
           {/* Командная строка */}
-          <div className="bg-slate-900 text-white p-3 rounded-2xl flex items-center gap-2 mb-4 shadow-xs">
+          <div className="bg-slate-900 text-white p-2 sm:p-3 rounded-xl sm:rounded-2xl flex items-center gap-1.5 sm:gap-2 mb-2 sm:mb-4 shadow-xs">
             <input
               type="text"
               value={commandInput}
@@ -1918,67 +2082,113 @@
                   setCommandInput('');
                 }
               }}
-              placeholder="Напишите или скажите: «Напиши список брендов со статусом Написал», «Кто не заплатил?», «Волчок оплатил»..."
-              className="flex-1 bg-slate-800 px-3.5 py-2 rounded-xl text-xs outline-none focus:ring-1 focus:ring-sky-400 placeholder-slate-400"
+              placeholder="«Кто не заплатил?», «Волчок оплатил», «Список Написал»..."
+              className="flex-1 min-w-0 bg-slate-800 px-3 py-1.5 sm:py-2 rounded-xl text-xs outline-none focus:ring-1 focus:ring-sky-400 placeholder-slate-400"
             />
             <button
               onClick={toggleVoice}
-              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1 transition ${isListening ? 'bg-rose-600 animate-pulse text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
+              title={isListening ? 'Идет запись...' : 'Голосовой ввод'}
+              className={`px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 transition ${isListening ? 'bg-rose-600 animate-pulse text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
             >
-              🎙 {isListening ? 'Слушаю...' : 'Голос'}
+              <span>🎙</span>
+              <span className="hidden sm:inline">{isListening ? 'Слушаю...' : 'Голос'}</span>
             </button>
             <button
               onClick={() => { executeSmartCommand(commandInput, 'local'); setCommandInput(''); }}
-              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold transition"
+              className="px-3 py-1.5 sm:px-3.5 sm:py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold shrink-0 transition"
             >
-              Спросить
+              <span className="hidden sm:inline">Спросить</span>
+              <span className="sm:hidden">→</span>
             </button>
           </div>
 
-          {/* Детализированные карточки выручки */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
-            <div className="bg-white p-3.5 rounded-xl border border-slate-200">
-              <div className="text-slate-500 text-[11px]">План выручки (активные)</div>
-              <div className="text-xl font-bold text-slate-900 mt-0.5">{financeStats.plannedRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Резидентов в зале: {financeStats.activeBrands.length}</div>
-            </div>
-            <div className="bg-white p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/30">
-              <div className="text-emerald-700 text-[11px] font-medium">Фактически получено</div>
-              <div className="text-xl font-bold text-emerald-700 mt-0.5">{financeStats.receivedRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-emerald-600 mt-0.5">Оплатили: {financeStats.paidBrands.length} из {financeStats.activeBrands.length}</div>
-            </div>
-            <div className="bg-white p-3.5 rounded-xl border border-amber-200 bg-amber-50/30">
-              <div className="text-amber-800 text-[11px] font-medium">Ожидает оплаты в этом мес.</div>
-              <div className="text-xl font-bold text-amber-700 mt-0.5">{financeStats.pendingRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-amber-700 mt-0.5">Не оплатили: {financeStats.unpaidBrands.length} шт.</div>
-            </div>
-            <div className="bg-white p-3.5 rounded-xl border border-rose-200 bg-rose-50/30">
-              <div className="text-rose-700 text-[11px] font-medium">Просрочено по дате</div>
-              <div className="text-xl font-bold text-rose-600 mt-0.5">{financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-rose-600 mt-0.5">Должников: {financeStats.overdueBrands.length} шт.</div>
-            </div>
-            <div className="bg-white p-3.5 rounded-xl border border-purple-200 bg-purple-50/30 col-span-2 lg:col-span-1">
-              <div className="text-purple-700 text-[11px] font-medium">На подписании договора</div>
-              <div className="text-xl font-bold text-purple-700 mt-0.5">+{financeStats.contractPotential.toLocaleString('ru-RU')} ₽</div>
-              <div className="text-[10px] text-purple-600 mt-0.5">Брендов на договоре: {financeStats.contractBrands.length}</div>
-            </div>
+          {/* Детализированные карточки выручки (сворачиваемые) */}
+          <div className="mb-2.5 sm:mb-4">
+            {isFinanceCollapsed ? (
+              <div
+                onClick={() => setIsFinanceCollapsed(false)}
+                className="bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between text-xs cursor-pointer hover:bg-slate-50 active:bg-slate-100 transition select-none"
+              >
+                <div className="flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
+                  <span className="font-bold text-slate-800 shrink-0">
+                    💰 План: {Math.round(financeStats.plannedRevenue / 1000)}k ₽
+                  </span>
+                  <span className="text-slate-300 shrink-0">•</span>
+                  <span className="text-emerald-700 font-semibold shrink-0">
+                    Факт: {Math.round(financeStats.receivedRevenue / 1000)}k ₽ ({receivedPercent}%)
+                  </span>
+                  {financeStats.overdueBrands.length > 0 && (
+                    <>
+                      <span className="text-slate-300 shrink-0">•</span>
+                      <span className="text-rose-600 font-bold truncate">
+                        🚨 Долг: {Math.round(financeStats.overdueRevenue / 1000)}k ₽
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="text-[11px] font-semibold text-sky-600 flex items-center gap-1 shrink-0 ml-2">
+                  <span>Развернуть</span>
+                  <span>▾</span>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-xs font-bold text-slate-700">Финансовая сводка за месяц</span>
+                  <button
+                    onClick={() => setIsFinanceCollapsed(true)}
+                    className="text-[11px] font-semibold text-sky-600 hover:text-sky-800 flex items-center gap-0.5"
+                  >
+                    <span>Свернуть</span>
+                    <span>▴</span>
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-3">
+                  <div className="bg-white p-2.5 sm:p-3.5 rounded-xl border border-slate-200">
+                    <div className="text-slate-500 text-[10px] sm:text-[11px]">План выручки (активные)</div>
+                    <div className="text-base sm:text-xl font-bold text-slate-900 mt-0.5">{financeStats.plannedRevenue.toLocaleString('ru-RU')} ₽</div>
+                    <div className="text-[9px] sm:text-[10px] text-slate-400 mt-0.5">Резидентов в зале: {financeStats.activeBrands.length}</div>
+                  </div>
+                  <div className="bg-white p-2.5 sm:p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/30">
+                    <div className="text-emerald-700 text-[10px] sm:text-[11px] font-medium">Фактически получено</div>
+                    <div className="text-base sm:text-xl font-bold text-emerald-700 mt-0.5">{financeStats.receivedRevenue.toLocaleString('ru-RU')} ₽</div>
+                    <div className="text-[9px] sm:text-[10px] text-emerald-600 mt-0.5">Оплатили: {financeStats.paidBrands.length} из {financeStats.activeBrands.length} ({receivedPercent}%)</div>
+                  </div>
+                  <div className="bg-white p-2.5 sm:p-3.5 rounded-xl border border-amber-200 bg-amber-50/30">
+                    <div className="text-amber-800 text-[10px] sm:text-[11px] font-medium">Ожидает оплаты в этом мес.</div>
+                    <div className="text-base sm:text-xl font-bold text-amber-700 mt-0.5">{financeStats.pendingRevenue.toLocaleString('ru-RU')} ₽</div>
+                    <div className="text-[9px] sm:text-[10px] text-amber-700 mt-0.5">Не оплатили: {financeStats.unpaidBrands.length} шт.</div>
+                  </div>
+                  <div className="bg-white p-2.5 sm:p-3.5 rounded-xl border border-rose-200 bg-rose-50/30">
+                    <div className="text-rose-700 text-[10px] sm:text-[11px] font-medium">Просрочено по дате</div>
+                    <div className="text-base sm:text-xl font-bold text-rose-600 mt-0.5">{financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽</div>
+                    <div className="text-[9px] sm:text-[10px] text-rose-600 mt-0.5">Должников: {financeStats.overdueBrands.length} шт.</div>
+                  </div>
+                  <div className="bg-white p-2.5 sm:p-3.5 rounded-xl border border-purple-200 bg-purple-50/30 col-span-2 lg:col-span-1">
+                    <div className="text-purple-700 text-[10px] sm:text-[11px] font-medium">На подписании договора</div>
+                    <div className="text-base sm:text-xl font-bold text-purple-700 mt-0.5">+{financeStats.contractPotential.toLocaleString('ru-RU')} ₽</div>
+                    <div className="text-[9px] sm:text-[10px] text-purple-600 mt-0.5">Брендов на договоре: {financeStats.contractBrands.length}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Навигация по вкладкам */}
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2 sm:mb-3">
             <div className="flex flex-wrap items-center gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-semibold relative">
               <button
                 onClick={() => { setActiveTab('kanban'); setIsMoreMenuOpen(false); }}
-                className={`px-3.5 py-1.5 rounded-lg transition ${activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'kanban' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
                 Канбан
               </button>
 
               <button
                 onClick={() => { setActiveTab('finance'); setIsMoreMenuOpen(false); }}
-                className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'finance' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
               >
-                <span>Финансы и Оплаты</span>
+                <span>Финансы</span>
                 {financeStats.overdueBrands.length > 0 && (
                   <span className="ml-0.5 px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
                     {financeStats.overdueBrands.length}
@@ -1991,7 +2201,7 @@
                 <button
                   type="button"
                   onClick={() => setIsMoreMenuOpen(prev => !prev)}
-                  className={`px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
+                  className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${
                     activeMoreTabObj
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -2038,7 +2248,7 @@
             </div>
 
             {(activeTab === 'kanban' || activeTab === 'list') && (
-              <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
+              <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end w-full sm:w-auto">
                 <input
                   type="text"
                   value={searchQuery}
@@ -2050,112 +2260,196 @@
             )}
           </div>
 
-          {/* ВКЛАДКА 1: КАНБАН-ДОСКА */}
-          {activeTab === 'kanban' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 items-start flex-1">
+          {/* Быстрые фильтры / табы по этапам (Stage Filter Pills) */}
+          {(activeTab === 'kanban' || activeTab === 'list') && (
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 mb-2.5 text-xs font-semibold">
+              <button
+                onClick={() => setStageFilter('all')}
+                className={`px-2.5 py-1 rounded-lg shrink-0 transition flex items-center gap-1 ${
+                  stageFilter === 'all'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                }`}
+              >
+                <span>Все</span>
+                <span className={`text-[10px] px-1 rounded-full ${stageFilter === 'all' ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'}`}>
+                  {brands.length}
+                </span>
+              </button>
+
               {STAGES.map(stage => {
-                const list = filteredBrands.filter(b => b.stage === stage.id);
+                const count = brands.filter(b => b.stage === stage.id).length;
+                const isSelected = stageFilter === stage.id;
                 return (
-                  <div key={stage.id} className="bg-slate-100/90 rounded-2xl p-3 border border-slate-200 flex flex-col gap-2.5 max-h-[75vh]">
-                    <div className="flex items-center justify-between font-bold text-xs px-1 text-slate-800">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`w-2.5 h-2.5 rounded-full ${stage.dot}`} />
-                        <span>{stage.short}</span>
-                      </div>
-                      <span className="bg-white px-2 py-0.5 rounded-full text-[11px] border border-slate-200">{list.length}</span>
-                    </div>
-
-                    <div className="space-y-2.5 overflow-y-auto pr-0.5 flex-1">
-                      {list.length === 0 ? (
-                        <div className="text-center py-6 text-xs text-slate-400 border border-dashed border-slate-300 rounded-xl">
-                          Пусто
-                        </div>
-                      ) : (
-                        list.map(brand => {
-                          const isPaid = brand.paidMonth === currentMonthKey;
-                          const overdue = isBrandOverdue(brand);
-                          return (
-                            <div key={brand.id} className={`bg-white p-3.5 rounded-xl border shadow-2xs transition flex flex-col gap-2 ${overdue ? 'border-rose-400 ring-1 ring-rose-200' : 'border-slate-200'}`}>
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <div className="font-bold text-sm text-slate-900">{brand.name}</div>
-                                  <div className="text-[11px] text-slate-500">{brand.category}</div>
-                                </div>
-                                <button onClick={() => { setEditingBrand(brand); setIsModalOpen(true); }} className="text-slate-400 hover:text-slate-700 text-xs p-1" title="Редактировать карточку">✎</button>
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                                {brand.tgUsername && (
-                                  <a href={`https://t.me/${brand.tgUsername.replace('@','')}`} target="_blank" className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded-md text-[11px] font-medium border border-sky-200/60">
-                                    @{brand.tgUsername.replace('@','')}
-                                  </a>
-                                )}
-                                {brand.phone && (
-                                  <a href={`tel:${brand.phone.replace(/[^\d+]/g,'')}`} className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[11px] font-medium border border-emerald-200/60">
-                                    📞 {brand.phone}
-                                  </a>
-                                )}
-                              </div>
-
-                              <div className="flex items-center justify-between text-[11px] text-slate-600 pt-1 border-t border-slate-100">
-                                <span>До {brand.paymentDay || 10} числа</span>
-                                <span className="font-bold text-slate-900">{(Number(brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽/мес</span>
-                              </div>
-
-                              {brand.stage === 'active' && (
-                                <button
-                                  onClick={() => toggleBrandPaidStatus(brand.id)}
-                                  className={`w-full py-1 px-2 rounded-lg text-[11px] font-bold border transition ${
-                                    isPaid
-                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : overdue
-                                      ? 'bg-rose-600 text-white border-rose-600 animate-pulse'
-                                      : 'bg-amber-50 text-amber-800 border-amber-200'
-                                  }`}
-                                >
-                                  {isPaid ? '✅ Оплачено в этом мес.' : overdue ? `🚨 Просрочено (до ${brand.paymentDay} числа)` : `⏳ Ожидает (до ${brand.paymentDay} числа)`}
-                                </button>
-                              )}
-
-                              {brand.notes && (
-                                <p className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 line-clamp-2">
-                                  {brand.notes}
-                                </p>
-                              )}
-
-                              <div className="flex items-center gap-1.5 pt-1">
-                                <button
-                                  onClick={() => {
-                                    const offer = DEFAULT_OFFER_TEMPLATE.replace('{brand}', brand.name);
-                                    navigator.clipboard.writeText(offer);
-                                    if (brand.stage === 'lead') {
-                                      handleStageChangeWithLog(brand.id, 'contacted');
-                                    }
-                                    if (brand.tgUsername) {
-                                      window.open(`https://t.me/${brand.tgUsername.replace('@','')}`, '_blank');
-                                    }
-                                    showToast(`Оффер для «${brand.name}» скопирован!`);
-                                  }}
-                                  className="flex-1 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold transition"
-                                >
-                                  Оффер + ТГ
-                                </button>
-                                <select
-                                  value={brand.stage}
-                                  onChange={e => handleStageChangeWithLog(brand.id, e.target.value)}
-                                  className="text-[10px] bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1 font-semibold"
-                                >
-                                  {STAGES.map(s => <option key={s.id} value={s.id}>{s.short}</option>)}
-                                </select>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
+                  <button
+                    key={stage.id}
+                    onClick={() => {
+                      if (stageFilter === stage.id) {
+                        setStageFilter('all');
+                      } else {
+                        setStageFilter(stage.id);
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded-lg shrink-0 transition flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-slate-900 text-white shadow-xs'
+                        : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${stage.dot}`} />
+                    <span>{stage.short}</span>
+                    <span className={`text-[10px] px-1 rounded-full ${isSelected ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'}`}>
+                      {count}
+                    </span>
+                    {isSelected && <span className="text-[10px] text-slate-400 ml-0.5">✕</span>}
+                  </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* ВКЛАДКА 1: КАНБАН-ДОСКА (SNAP-X ГОРИЗОНТАЛЬНЫЙ СКРОЛЛ НА МОБИЛЬНЫХ) */}
+          {activeTab === 'kanban' && (
+            <div className="flex-1 flex flex-col">
+              {visibleStages.length === 1 && (
+                <div className="flex items-center justify-between bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl text-xs mb-2 text-slate-700">
+                  <span>Этап: <strong>{visibleStages[0].title}</strong></span>
+                  <button
+                    onClick={() => setStageFilter('all')}
+                    className="text-sky-600 hover:text-sky-800 font-bold"
+                  >
+                    Показать все 6 колонок ↔
+                  </button>
+                </div>
+              )}
+
+              <div
+                id="kanban-container"
+                className="flex md:grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 items-start flex-1 overflow-x-auto snap-x snap-mandatory pb-3 no-scrollbar"
+                style={{ WebkitOverflowScrolling: 'touch' }}
+              >
+                {visibleStages.map(stage => {
+                  const list = brands.filter(b => {
+                    if (b.stage !== stage.id) return false;
+                    if (!searchQuery) return true;
+                    const q = searchQuery.toLowerCase();
+                    return (
+                      b.name.toLowerCase().includes(q) ||
+                      b.tgUsername.toLowerCase().includes(q) ||
+                      b.phone.includes(q)
+                    );
+                  });
+
+                  return (
+                    <div
+                      key={stage.id}
+                      id={`kanban-col-${stage.id}`}
+                      className={`${
+                        visibleStages.length === 1
+                          ? 'w-full'
+                          : 'w-[85vw] sm:w-[320px] md:w-auto flex-shrink-0 snap-center'
+                      } bg-slate-100/90 rounded-2xl p-3 border border-slate-200 flex flex-col gap-2.5 max-h-[72vh] sm:max-h-[75vh]`}
+                    >
+                      <div className="flex items-center justify-between font-bold text-xs px-1 text-slate-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`w-2.5 h-2.5 rounded-full ${stage.dot}`} />
+                          <span>{stage.short}</span>
+                        </div>
+                        <span className="bg-white px-2 py-0.5 rounded-full text-[11px] border border-slate-200">{list.length}</span>
+                      </div>
+
+                      <div className="space-y-2.5 overflow-y-auto pr-0.5 flex-1" style={{ overscrollBehaviorY: 'contain' }}>
+                        {list.length === 0 ? (
+                          <div className="text-center py-6 text-xs text-slate-400 border border-dashed border-slate-300 rounded-xl">
+                            Пусто
+                          </div>
+                        ) : (
+                          list.map(brand => {
+                            const isPaid = brand.paidMonth === currentMonthKey;
+                            const overdue = isBrandOverdue(brand);
+                            return (
+                              <div key={brand.id} className={`bg-white p-3 rounded-xl border shadow-2xs transition flex flex-col gap-2 ${overdue ? 'border-rose-400 ring-1 ring-rose-200' : 'border-slate-200'}`}>
+                                <div className="flex justify-between items-start gap-1">
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-sm text-slate-900 truncate">{brand.name}</div>
+                                    <div className="text-[11px] text-slate-500 truncate">{brand.category}</div>
+                                  </div>
+                                  <button onClick={() => { setEditingBrand(brand); setIsModalOpen(true); }} className="text-slate-400 hover:text-slate-700 text-xs p-1 shrink-0" title="Редактировать карточку">✎</button>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                  {brand.tgUsername && (
+                                    <a href={`https://t.me/${brand.tgUsername.replace('@','')}`} target="_blank" className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded-md text-[11px] font-medium border border-sky-200/60">
+                                      @{brand.tgUsername.replace('@','')}
+                                    </a>
+                                  )}
+                                  {brand.phone && (
+                                    <a href={`tel:${brand.phone.replace(/[^\d+]/g,'')}`} className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[11px] font-medium border border-emerald-200/60">
+                                      📞 {brand.phone}
+                                    </a>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between text-[11px] text-slate-600 pt-1 border-t border-slate-100">
+                                  <span>До {brand.paymentDay || 10} числа</span>
+                                  <span className="font-bold text-slate-900">{(Number(brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽/мес</span>
+                                </div>
+
+                                {brand.stage === 'active' && (
+                                  <button
+                                    onClick={() => toggleBrandPaidStatus(brand.id)}
+                                    className={`w-full py-1 px-2 rounded-lg text-[11px] font-bold border transition ${
+                                      isPaid
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : overdue
+                                        ? 'bg-rose-600 text-white border-rose-600 animate-pulse'
+                                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                                    }`}
+                                  >
+                                    {isPaid ? '✅ Оплачено в этом мес.' : overdue ? `🚨 Просрочено (до ${brand.paymentDay || 10} числа)` : `⏳ Ожидает (до ${brand.paymentDay || 10} числа)`}
+                                  </button>
+                                )}
+
+                                {brand.notes && (
+                                  <p className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 line-clamp-2">
+                                    {brand.notes}
+                                  </p>
+                                )}
+
+                                <div className="flex items-center gap-1.5 pt-1">
+                                  <button
+                                    onClick={() => {
+                                      const offer = DEFAULT_OFFER_TEMPLATE.replace('{brand}', brand.name);
+                                      navigator.clipboard.writeText(offer);
+                                      if (brand.stage === 'lead') {
+                                        handleStageChangeWithLog(brand.id, 'contacted');
+                                      }
+                                      if (brand.tgUsername) {
+                                        window.open(`https://t.me/${brand.tgUsername.replace('@','')}`, '_blank');
+                                      }
+                                      showToast(`Оффер для «${brand.name}» скопирован!`);
+                                    }}
+                                    className="flex-1 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold transition"
+                                  >
+                                    Оффер + ТГ
+                                  </button>
+                                  <select
+                                    value={brand.stage}
+                                    onChange={e => handleStageChangeWithLog(brand.id, e.target.value)}
+                                    className="text-[10px] bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1 font-semibold"
+                                  >
+                                    {STAGES.map(s => <option key={s.id} value={s.id}>{s.short}</option>)}
+                                  </select>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
