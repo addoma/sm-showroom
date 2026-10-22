@@ -34,7 +34,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useMemo, useRef } = React;
+    const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
     // ==========================================
     // НЕОСПОРИМЫЕ ДАННЫЕ ВЛАДЕЛЬЦА (HARDCODED)
@@ -44,6 +44,7 @@
     const OWNER_PHONE_CLEAN = '79266011608';
     const DEFAULT_BOT_TOKEN = '8312776596:AAE0LlYuKisLzebdftj2fJaQ5571RSu5CBI';
     const DEFAULT_BOT_USERNAME = 'SM_Brand_CRM_bot';
+    const DEFAULT_API_SECRET_KEY = 'SHOWROOM_CRM_SECRET_2026';
 
     const ROLES = {
       owner: { id: 'owner', title: 'Владелец', badge: 'bg-amber-500 text-slate-950 font-black border-amber-400' },
@@ -246,6 +247,79 @@
     ];
 
     const DEFAULT_OFFER_TEMPLATE = `Привет, команда {brand}! 👋\n\nПишу вам по поводу партнерства и выставления вашей коллекции в нашем мультибрендовом шоуруме.\n\nНам очень близок ваш стиль! Мы предлагаем:\n• Выделенный рейл или корнер с вашим брендингом\n• Полное кассовое и клиентское обслуживание + работа стилистов\n• Контент-поддержка и отметки в наших соцсетях\n• Прозрачная отчетность по продажам\n\nПодскажите, с кем можно обсудить условия размещения? Либо напишите нашему боту: https://t.me/SM_Brand_CRM_bot`;
+
+    // ==========================================
+    // СЛУЖБА ОБЛАЧНОГО ХРАНИЛИЩА (GOOGLE APPS SCRIPT API)
+    // ==========================================
+    const CloudStorageService = {
+      async callApi(url, payload) {
+        if (!url || !url.startsWith('https://script.google.com/')) {
+          throw new Error('Некорректный URL Google Apps Script Web App');
+        }
+        // Используем 'text/plain;charset=utf-8' для обхода CORS Preflight OPTIONS запросов
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8'
+          },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        return data;
+      },
+
+      async getAllData(url, apiKey) {
+        if (!url) return null;
+        return await this.callApi(url, {
+          action: 'getAllData',
+          apiKey: apiKey || ''
+        });
+      },
+
+      async initialMigration(url, apiKey, { brands, aclUsers, auditLogs }) {
+        return await this.callApi(url, {
+          action: 'initialMigration',
+          apiKey: apiKey || '',
+          brands,
+          aclUsers,
+          auditLogs
+        });
+      },
+
+      async syncBrand(url, apiKey, brand, operation = 'update') {
+        return await this.callApi(url, {
+          action: 'syncBrands',
+          apiKey: apiKey || '',
+          operation,
+          brand
+        });
+      },
+
+      async syncBrandsBatch(url, apiKey, brands) {
+        return await this.callApi(url, {
+          action: 'syncBrands',
+          apiKey: apiKey || '',
+          brands
+        });
+      },
+
+      async syncUser(url, apiKey, user, operation = 'update') {
+        return await this.callApi(url, {
+          action: 'syncUsers',
+          apiKey: apiKey || '',
+          operation,
+          user
+        });
+      },
+
+      async appendLog(url, apiKey, log) {
+        return await this.callApi(url, {
+          action: 'appendLog',
+          apiKey: apiKey || '',
+          log
+        });
+      }
+    };
 
     function detectStageFromText(str) {
       const s = str.toLowerCase();
@@ -484,6 +558,13 @@
         return saved !== null ? JSON.parse(saved) : true;
       });
 
+      // --- НАСТРОЙКИ GOOGLE APPS SCRIPT И ОБЛАЧНОЙ СИНХРОНИЗАЦИИ ---
+      const [gasUrl, setGasUrl] = useState(() => localStorage.getItem('sm_crm_gas_url') || '');
+      const [gasApiKey, setGasApiKey] = useState(() => localStorage.getItem('sm_crm_gas_key') || DEFAULT_API_SECRET_KEY);
+      // 'synced' | 'syncing' | 'offline' | 'needs_migration' | 'not_configured' | 'error'
+      const [cloudStatus, setCloudStatus] = useState(() => (localStorage.getItem('sm_crm_gas_url') ? 'syncing' : 'not_configured'));
+      const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
+
       const [botInfo, setBotInfo] = useState(null);
       const [botStatus, setBotStatus] = useState('checking');
       const [activeTab, setActiveTab] = useState('kanban'); // 'kanban' | 'finance' | 'list' | 'assistant' | 'telegram' | 'users' | 'datalogs' | 'guide'
@@ -492,7 +573,7 @@
       const [stageFilter, setStageFilter] = useState('all');
       const [isModalOpen, setIsModalOpen] = useState(false);
       const [editingBrand, setEditingBrand] = useState(null);
-      const [brandToDelete, setBrandToDelete] = useState(null); // Состояние для диалогового окна подтверждения удаления
+      const [brandToDelete, setBrandToDelete] = useState(null);
       const [toast, setToast] = useState(null);
       const [webAppUrl, setWebAppUrl] = useState(() => localStorage.getItem('sm_crm_webapp_url') || window.location.href);
 
@@ -533,9 +614,17 @@
       const lastUpdateIdRef = useRef(Number(localStorage.getItem('sm_crm_last_uid_v4') || 0));
       const brandsRef = useRef(brands);
       const aclUsersRef = useRef(aclUsers);
+      const auditLogsRef = useRef(auditLogs);
+      const gasUrlRef = useRef(gasUrl);
+      const gasApiKeyRef = useRef(gasApiKey);
+
       useEffect(() => { brandsRef.current = brands; }, [brands]);
       useEffect(() => { aclUsersRef.current = aclUsers; }, [aclUsers]);
+      useEffect(() => { auditLogsRef.current = auditLogs; }, [auditLogs]);
+      useEffect(() => { gasUrlRef.current = gasUrl; }, [gasUrl]);
+      useEffect(() => { gasApiKeyRef.current = gasApiKey; }, [gasApiKey]);
 
+      // Локальная персистенция
       useEffect(() => { localStorage.setItem('sm_crm_acl_users_v1', JSON.stringify(aclUsers)); }, [aclUsers]);
       useEffect(() => { localStorage.setItem('sm_crm_audit_logs_v1', JSON.stringify(auditLogs.slice(0, 200))); }, [auditLogs]);
       useEffect(() => { localStorage.setItem('sm_crm_brands_v4', JSON.stringify(brands)); }, [brands]);
@@ -546,6 +635,27 @@
       useEffect(() => { localStorage.setItem('sm_crm_logs_v4', JSON.stringify(assistantLogs.slice(0, 40))); }, [assistantLogs]);
       useEffect(() => { localStorage.setItem('sm_crm_updates_v4', JSON.stringify(tgUpdates.slice(0, 40))); }, [tgUpdates]);
       useEffect(() => { localStorage.setItem('sm_crm_webapp_url', webAppUrl); }, [webAppUrl]);
+      useEffect(() => { localStorage.setItem('sm_crm_gas_url', gasUrl); }, [gasUrl]);
+      useEffect(() => { localStorage.setItem('sm_crm_gas_key', gasApiKey); }, [gasApiKey]);
+
+      const showToast = (message) => {
+        setToast(message);
+        setTimeout(() => setToast(null), 3800);
+      };
+
+      // Фоновая репликация в Google Apps Script (Optimistic UI)
+      const queueCloudSync = async (syncFn) => {
+        if (!gasUrlRef.current) return;
+        setCloudStatus('syncing');
+        try {
+          await syncFn();
+          setCloudStatus('synced');
+        } catch (err) {
+          console.warn('Ошибка репликации в Google Таблицу:', err);
+          setCloudStatus('offline');
+          showToast('⚠️ Офлайн: изменение сохранено в локальном кэше');
+        }
+      };
 
       const addAuditLog = (category, action, customActor = null) => {
         const actorName = customActor?.name || authState.tgUser?.first_name || 'Пользователь';
@@ -561,6 +671,7 @@
           action
         };
         setAuditLogs(prev => [entry, ...prev]);
+        queueCloudSync(() => CloudStorageService.appendLog(gasUrlRef.current, gasApiKeyRef.current, entry));
       };
 
       // --- ПРОВЕРКА АВТОРИЗАЦИИ TELEGRAM MINI APP ПРИ ЗАПУСКЕ ---
@@ -635,9 +746,213 @@
         authenticateTelegramSession();
       }, [botToken, aclUsers]);
 
-      const showToast = (message) => {
-        setToast(message);
-        setTimeout(() => setToast(null), 3500);
+      // --- СТРАТЕГИЯ STALE-WHILE-REVALIDATE + ANTI-WIPE GUARD ---
+      useEffect(() => {
+        if (authState.status !== 'authorized') return;
+        if (!gasUrl) {
+          setCloudStatus('not_configured');
+          return;
+        }
+
+        let isCancelled = false;
+        const initialLoadFromCloud = async () => {
+          setCloudStatus('syncing');
+          try {
+            const res = await CloudStorageService.getAllData(gasUrl, gasApiKey);
+            if (isCancelled) return;
+
+            if (!res || !res.success) {
+              throw new Error(res?.error || 'Неверный ответ от Google Apps Script');
+            }
+
+            const cloudBrands = Array.isArray(res.brands) ? res.brands : [];
+            const cloudAcl = Array.isArray(res.aclUsers) ? res.aclUsers : [];
+            const cloudLogs = Array.isArray(res.auditLogs) ? res.auditLogs : [];
+
+            // ==========================================
+            // КРИТИЧЕСКИЙ АНТИ-ВАЙП ГВАРД (ANTI-WIPE GUARD)
+            // ==========================================
+            if (cloudBrands.length === 0) {
+              if (brandsRef.current && brandsRef.current.length > 0) {
+                // В облаке пусто, а локально есть данные!
+                // Ни в коем случае НЕ затираем localStorage!
+                setCloudStatus('needs_migration');
+                setIsMigrationModalOpen(true);
+                showToast('⚠️ Google Таблица пуста. Локальные данные сохранены! Требуется миграция в облако.');
+                return;
+              }
+            }
+
+            // Мягкое обновление стейта из облака
+            if (cloudBrands.length > 0) {
+              setBrands(cloudBrands);
+              localStorage.setItem('sm_crm_brands_v4', JSON.stringify(cloudBrands));
+            }
+
+            if (cloudAcl.length > 0) {
+              let mergedUsers = cloudAcl;
+              const hasOwner = mergedUsers.some(u => isImmutableOwner(u.username, u.phone));
+              if (!hasOwner) {
+                mergedUsers = [INITIAL_ACL_USERS[0], ...mergedUsers];
+              } else {
+                mergedUsers = mergedUsers.map(u =>
+                  isImmutableOwner(u.username, u.phone)
+                    ? { ...u, username: OWNER_USERNAME, phone: OWNER_PHONE, role: 'owner', immutable: true }
+                    : u
+                );
+              }
+              setAclUsers(mergedUsers);
+              localStorage.setItem('sm_crm_acl_users_v1', JSON.stringify(mergedUsers));
+            }
+
+            if (cloudLogs.length > 0) {
+              setAuditLogs(cloudLogs);
+              localStorage.setItem('sm_crm_audit_logs_v1', JSON.stringify(cloudLogs.slice(0, 200)));
+            }
+
+            setCloudStatus('synced');
+          } catch (e) {
+            if (isCancelled) return;
+            console.warn('Ошибка при проверке облака:', e);
+            setCloudStatus('offline');
+          }
+        };
+
+        initialLoadFromCloud();
+        return () => { isCancelled = true; };
+      }, [authState.status, gasUrl, gasApiKey]);
+
+      // --- АВАРИЙНЫЙ БЭКАП JSON (FAIL-SAFE JSON EXPORT) ---
+      const downloadJsonBackup = () => {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}`;
+        const filename = `showroom_crm_backup_${dateStr}.json`;
+
+        const backupData = {
+          appName: 'Showroom Brand CRM',
+          version: '4.0-cloud-migration',
+          exportedAt: now.toISOString(),
+          owner: OWNER_USERNAME,
+          statistics: {
+            brandsCount: brandsRef.current.length,
+            usersCount: aclUsersRef.current.length,
+            logsCount: auditLogs.length
+          },
+          brands: brandsRef.current,
+          aclUsers: aclUsersRef.current,
+          auditLogs: auditLogs,
+          settings: {
+            botToken,
+            adminChatId,
+            autoDailyReminder,
+            gasUrl,
+            webAppUrl
+          }
+        };
+
+        const jsonStr = JSON.stringify(backupData, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Резервная копия сохранена: ${filename}`);
+      };
+
+      // --- ПЕРВИЧНАЯ МИГРАЦИЯ / РУЧНОЙ ФОРС-ПУШ В ТАБЛИЦУ ---
+      const performInitialMigration = async () => {
+        if (!gasUrl) {
+          showToast('Укажите URL Google Apps Script в настройках');
+          return;
+        }
+        setCloudStatus('syncing');
+        try {
+          const res = await CloudStorageService.initialMigration(gasUrl, gasApiKey, {
+            brands: brandsRef.current,
+            aclUsers: aclUsersRef.current,
+            auditLogs: auditLogs
+          });
+          if (res && res.success) {
+            setCloudStatus('synced');
+            setIsMigrationModalOpen(false);
+            showToast(`✅ Данные успешно выгружены в Google Таблицу (${brandsRef.current.length} брендов)!`);
+            addAuditLog('СИСТЕМА', `Первичная выгрузка базы в Google Таблицу: ${brandsRef.current.length} брендов, ${aclUsersRef.current.length} пользователей`);
+          } else {
+            setCloudStatus('error');
+            showToast(`Ошибка миграции: ${res?.error || 'Не удалось выгрузить данные'}`);
+          }
+        } catch (err) {
+          setCloudStatus('offline');
+          showToast('Сетевая ошибка при выгрузке в Google Таблицу');
+        }
+      };
+
+      // --- ПРИНУДИТЕЛЬНАЯ ЗАГРУЗКА ИЗ ОБЛАКА (PULL) С ЗАЩИТОЙ ДАННЫХ ---
+      const forcePullFromCloud = async () => {
+        if (!gasUrl) {
+          showToast('Укажите URL Google Apps Script в настройках');
+          return;
+        }
+        setCloudStatus('syncing');
+        try {
+          const res = await CloudStorageService.getAllData(gasUrl, gasApiKey);
+          if (res && res.success) {
+            if (!res.brands || res.brands.length === 0) {
+              setCloudStatus('synced');
+              showToast('В Google Таблице нет записей. Локальные данные сохранены без изменений.');
+              return;
+            }
+            setBrands(res.brands);
+            if (res.aclUsers && res.aclUsers.length > 0) {
+              let merged = res.aclUsers;
+              const hasOwner = merged.some(u => isImmutableOwner(u.username, u.phone));
+              if (!hasOwner) {
+                merged = [INITIAL_ACL_USERS[0], ...merged];
+              }
+              setAclUsers(merged);
+            }
+            if (res.auditLogs && res.auditLogs.length > 0) {
+              setAuditLogs(res.auditLogs);
+            }
+            setCloudStatus('synced');
+            showToast(`✅ Загружено из облака: ${res.brands.length} брендов`);
+            addAuditLog('СИСТЕМА', `Ручная загрузка из Google Таблицы: ${res.brands.length} брендов`);
+          } else {
+            setCloudStatus('error');
+            showToast(`Ошибка загрузки: ${res?.error || 'Не удалось прочитать таблицу'}`);
+          }
+        } catch (err) {
+          setCloudStatus('offline');
+          showToast('Сетевая ошибка при загрузке из Google Таблицы');
+        }
+      };
+
+      // --- ПРОВЕРКА ПОДКЛЮЧЕНИЯ К GOOGLE ТАБЛИЦЕ ---
+      const testCloudConnection = async () => {
+        if (!gasUrl) {
+          showToast('Сначала введите Google Web App URL');
+          return;
+        }
+        setCloudStatus('syncing');
+        try {
+          const res = await CloudStorageService.getAllData(gasUrl, gasApiKey);
+          if (res && res.success) {
+            setCloudStatus('synced');
+            const bCount = Array.isArray(res.brands) ? res.brands.length : 0;
+            showToast(`✅ Соединение успешно! В Google Таблице найдено: ${bCount} брендов`);
+          } else {
+            setCloudStatus('error');
+            showToast(`Ошибка API: ${res?.error || 'Неверный ответ'}`);
+          }
+        } catch (err) {
+          setCloudStatus('offline');
+          showToast('Сетевая ошибка при подключении к Google Apps Script');
+        }
       };
 
       const checkBot = async (token) => {
@@ -700,6 +1015,7 @@
         };
 
         setAclUsers(prev => [...prev, newUserObj]);
+        queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, newUserObj, 'create'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
           `Добавлен участник ${newUserObj.name} (${cleanU ? '@' + cleanU : ''} ${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
@@ -725,7 +1041,9 @@
         }
         if (nextRole === 'owner') return;
 
-        setAclUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: nextRole } : u));
+        const updatedUser = { ...target, role: nextRole };
+        setAclUsers(prev => prev.map(u => u.id === targetUserId ? updatedUser : u));
+        queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, updatedUser, 'update'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
           `Изменена роль участника ${target.name} (@${target.username || '—'}): «${ROLES[target.role]?.title}» → «${ROLES[nextRole]?.title}»`
@@ -750,6 +1068,7 @@
         if (authState.role !== 'owner' && authState.role !== 'admin') return;
 
         setAclUsers(prev => prev.filter(u => u.id !== targetUserId));
+        queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, { id: targetUserId }, 'delete'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
           `Удален доступ у участника ${target.name} (@${target.username || '—'}, роль была «${ROLES[target.role]?.title}»)`
@@ -1001,12 +1320,16 @@
           resp = buildDailyReminderReport(currentBrands);
         } else if (action.type === 'MARK_PAID') {
           const curMonth = getCurrentMonthKey();
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, paidMonth: curMonth } : b));
+          const updatedBrand = { ...action.brand, paidMonth: curMonth };
+          setBrands(prev => prev.map(b => b.id === action.brand.id ? updatedBrand : b));
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
           addAuditLog('ФИНАНСЫ', `Отмечена оплата бренда «${action.brand.name}» за месяц ${curMonth}`, customActor);
           resp = `✅ Оплата от бренда «${action.brand.name}» (${(Number(action.brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽) за текущий месяц отмечена!`;
           showToast(`Оплачено: ${action.brand.name}`);
         } else if (action.type === 'SET_PAYMENT_DAY') {
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, paymentDay: action.paymentDay } : b));
+          const updatedBrand = { ...action.brand, paymentDay: action.paymentDay };
+          setBrands(prev => prev.map(b => b.id === action.brand.id ? updatedBrand : b));
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
           addAuditLog('ФИНАНСЫ', `Изменен день оплаты бренда «${action.brand.name}» на ${action.paymentDay}-е число`, customActor);
           resp = `📅 Для бренда «${action.brand.name}» установлен день ежемесячной оплаты: до ${action.paymentDay}-го числа.`;
         } else if (action.type === 'STATS') {
@@ -1045,18 +1368,24 @@
             notes: action.payload.notes
           };
           setBrands(prev => [newB, ...prev]);
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, newB, 'create'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Создан бренд «${newB.name}» (аренда ${newB.monthlyFee} ₽)`, customActor);
           resp = `✅ Добавлен бренд «${newB.name}»\n• Статус: ${STAGES.find(s => s.id === newB.stage)?.short}\n• Аренда: ${newB.monthlyFee.toLocaleString('ru-RU')} ₽ (до ${newB.paymentDay} числа)`;
           showToast(`Добавлен: ${newB.name}`);
         } else if (action.type === 'UPDATE_STAGE') {
           const oldStageTitle = STAGES.find(s => s.id === action.brand.stage)?.short;
           const newStageTitle = STAGES.find(s => s.id === action.stage)?.short;
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, stage: action.stage } : b));
+          const updatedBrand = { ...action.brand, stage: action.stage };
+          setBrands(prev => prev.map(b => b.id === action.brand.id ? updatedBrand : b));
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Бренд «${action.brand.name}»: статус изменен «${oldStageTitle}» → «${newStageTitle}»`, customActor);
           resp = `🔄 Статус «${action.brand.name}» изменен на: «${STAGES.find(s => s.id === action.stage)?.title}»`;
           showToast(`${action.brand.name} → ${newStageTitle}`);
         } else if (action.type === 'ADD_NOTE') {
-          setBrands(prev => prev.map(b => b.id === action.brand.id ? { ...b, notes: (b.notes ? b.notes + '\n' : '') + `[${now}]: ${action.note}` } : b));
+          const updatedNotes = (action.brand.notes ? action.brand.notes + '\n' : '') + `[${now}]: ${action.note}`;
+          const updatedBrand = { ...action.brand, notes: updatedNotes };
+          setBrands(prev => prev.map(b => b.id === action.brand.id ? updatedBrand : b));
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлена заметка к бренду «${action.brand.name}»: "${action.note}"`, customActor);
           resp = `📝 Заметка для «${action.brand.name}» сохранена:\n«${action.note}»`;
         } else if (action.type === 'FIND_BRAND') {
@@ -1088,7 +1417,9 @@
         const target = brands.find(b => b.id === brandId);
         if (!target) return;
         const nextPaid = target.paidMonth === curMonth ? '' : curMonth;
-        setBrands(prev => prev.map(b => b.id === brandId ? { ...b, paidMonth: nextPaid } : b));
+        const updatedBrand = { ...target, paidMonth: nextPaid };
+        setBrands(prev => prev.map(b => b.id === brandId ? updatedBrand : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
         addAuditLog(
           'ФИНАНСЫ',
           nextPaid
@@ -1103,7 +1434,9 @@
         if (!target || target.stage === nextStage) return;
         const oldStage = STAGES.find(s => s.id === target.stage)?.short;
         const newStage = STAGES.find(s => s.id === nextStage)?.short;
-        setBrands(prev => prev.map(b => b.id === brandId ? { ...b, stage: nextStage } : b));
+        const updatedBrand = { ...target, stage: nextStage };
+        setBrands(prev => prev.map(b => b.id === brandId ? updatedBrand : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
         addAuditLog('ДАННЫЕ БРЕНДОВ', `Изменен этап бренда «${target.name}»: «${oldStage}» → «${newStage}»`);
       };
 
@@ -1120,6 +1453,7 @@
         const deletedName = brandToDelete.name;
         const deletedId = brandToDelete.id;
         setBrands(prev => prev.filter(b => b.id !== deletedId));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, { id: deletedId }, 'delete'));
         addAuditLog('ДАННЫЕ БРЕНДОВ', `Удалена карточка бренда «${deletedName}»`);
         setBrandToDelete(null);
         if (editingBrand && editingBrand.id === deletedId) {
@@ -1172,10 +1506,12 @@
 
         if (editingBrand) {
           setBrands(brands.map(b => b.id === data.id ? data : b));
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, data, 'update'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Отредактирована карточка бренда «${data.name}» (этап: ${STAGES.find(s => s.id === data.stage)?.short}, аренда: ${data.monthlyFee} ₽)`);
           showToast(`Бренд ${data.name} обновлен`);
         } else {
           setBrands([data, ...brands]);
+          queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, data, 'create'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлен новый бренд «${data.name}» (аренда: ${data.monthlyFee} ₽)`);
           showToast(`Бренд ${data.name} добавлен`);
         }
@@ -1300,21 +1636,48 @@
       const activeMoreTabObj = moreTabsList.find(t => t.id === activeTab);
 
       // =========================================================
-      // ОСНОВНОЙ ИНТЕРФЕЙС (ДОСТУПЕН ТОЛЬКО АВТОРИЗОВАННЫМ РОЛЯМ)
+      // ОСНОВНОЙ ИНТЕРФЕЙС
       // =========================================================
       return (
         <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto p-3 sm:p-6">
           {/* Всплывающее уведомление */}
           {toast && (
-            <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700">
+            <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700 animate-in fade-in duration-200">
               ⚡️ {toast}
+            </div>
+          )}
+
+          {/* БАННЕР ПЕРВИЧНОЙ МИГРАЦИИ (ANTI-WIPE GUARD) */}
+          {cloudStatus === 'needs_migration' && !isMigrationModalOpen && (
+            <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-2.5 text-xs text-amber-900">
+                <span className="text-xl">☁️</span>
+                <div>
+                  <span className="font-bold">Google Таблица подключена, но пока пуста. </span>
+                  <span>В CRM сохранено {brands.length} брендов. Требуется первичная выгрузка базы в облако.</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadJsonBackup}
+                  className="px-3 py-1.5 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 rounded-xl text-xs font-semibold"
+                >
+                  📥 Бэкап JSON
+                </button>
+                <button
+                  onClick={() => setIsMigrationModalOpen(true)}
+                  className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl text-xs font-semibold shadow-xs"
+                >
+                  ⬆️ Начать миграцию
+                </button>
+              </div>
             </div>
           )}
 
           {/* Шапка */}
           <header className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-base">
+              <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold text-base shadow-xs">
                 SM
               </div>
               <div>
@@ -1323,6 +1686,53 @@
                   <span className={`px-2.5 py-0.5 rounded-full text-[11px] border ${currentRoleObj.badge}`}>
                     {currentRoleObj.title}: @{authState.tgUser?.username || OWNER_USERNAME}
                   </span>
+
+                  {/* ИНДИКАЦИЯ СТАТУСА ОБЛАКА В ШАПКЕ */}
+                  {cloudStatus === 'synced' && (
+                    <span
+                      title="Все данные синхронизированы с Google Таблицей"
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1.5"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      ☁️ Облако синхронизировано
+                    </span>
+                  )}
+                  {cloudStatus === 'syncing' && (
+                    <span
+                      title="Выполняется фоновый обмен с Google Таблицей"
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1.5"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-spin"></span>
+                      🔄 Синхронизация с Google Таблицей...
+                    </span>
+                  )}
+                  {cloudStatus === 'offline' && (
+                    <span
+                      title="Связь с Google Таблицей недоступна. Изменения сохраняются в локальном кэше."
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1.5"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                      ⚠️ Офлайн-режим (данные в кэше)
+                    </span>
+                  )}
+                  {cloudStatus === 'needs_migration' && (
+                    <button
+                      onClick={() => setIsMigrationModalOpen(true)}
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-300 flex items-center gap-1.5 animate-pulse"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                      ⬆️ Требуется миграция в облако
+                    </button>
+                  )}
+                  {cloudStatus === 'not_configured' && (
+                    <span
+                      title="Google Таблица еще не подключена в настройках Владельца"
+                      className="px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1"
+                    >
+                      ☁️ Локальный режим
+                    </span>
+                  )}
+
                   <a href="https://t.me/SM_Brand_CRM_bot" target="_blank" className="px-2 py-0.5 rounded-full text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1">
                     <span className={`w-2 h-2 rounded-full ${botStatus === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
                     @{botInfo?.username || DEFAULT_BOT_USERNAME}
@@ -1333,6 +1743,15 @@
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
+              {isOwner && (
+                <button
+                  onClick={downloadJsonBackup}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition flex items-center gap-1"
+                  title="Скачать резервную копию JSON на устройство"
+                >
+                  📥 Бэкап JSON
+                </button>
+              )}
               <button
                 onClick={() => sendDailyReminderToTelegram(true)}
                 className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl text-xs font-semibold transition"
@@ -1342,7 +1761,7 @@
               <button onClick={() => fetchBotUpdates(false)} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-semibold text-slate-700 transition">
                 🔄 {isSyncing ? 'Синхр...' : 'Обновить ТГ'}
               </button>
-              <button onClick={() => { setEditingBrand(null); setIsModalOpen(true); }} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition">
+              <button onClick={() => { setEditingBrand(null); setIsModalOpen(true); }} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition shadow-xs">
                 + Добавить бренд
               </button>
             </div>
@@ -1427,7 +1846,7 @@
             </div>
           </div>
 
-          {/* Навигация по вкладкам: на виду только Канбан, Финансы и выпадающий список «Ещё» */}
+          {/* Навигация по вкладкам */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex flex-wrap items-center gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-semibold relative">
               <button
@@ -1507,7 +1926,7 @@
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   placeholder="Поиск бренда, @tg, телефона..."
-                  className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full sm:w-64 outline-none"
+                  className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full sm:w-64 outline-none focus:ring-1 focus:ring-slate-900"
                 />
               </div>
             )}
@@ -2034,63 +2453,160 @@
             </div>
           )}
 
-          {/* ВКЛАДКА 8: НАСТРОЙКИ БОТА (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) */}
+          {/* ВКЛАДКА 8: НАСТРОЙКИ (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) */}
           {activeTab === 'guide' && isOwner && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
-                <h3 className="font-bold text-base text-slate-900">🎙 Распознавание голосовых (.ogg) из Telegram и Напоминания</h3>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Ваш личный Telegram Chat ID (для ежедневных напоминаний):</label>
-                  <input
-                    type="text"
-                    value={adminChatId}
-                    onChange={e => setAdminChatId(e.target.value)}
-                    placeholder="Определится автоматически, когда вы напишете боту"
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
+            <div className="space-y-6">
+              {/* СЕКЦИЯ 1: ОБЛАЧНОЕ ХРАНИЛИЩЕ GOOGLE ТАБЛИЦЫ (ZERO-DATA-LOSS) */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                  <div>
+                    <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                      <span>☁️ Облачное хранилище (Google Apps Script API)</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">Zero-Data-Loss</span>
+                    </h3>
+                    <p className="text-slate-500 text-xs mt-1">
+                      Бесшовная синхронизация карточек брендов, прав ACL и даталогов с Google Таблицей.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={testCloudConnection}
+                      className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl font-semibold transition"
+                    >
+                      🧪 Проверить связь
+                    </button>
+                    <button
+                      onClick={downloadJsonBackup}
+                      className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold transition flex items-center gap-1.5"
+                    >
+                      <span>📥 Скачать резервную копию JSON</span>
+                    </button>
+                  </div>
                 </div>
 
-                <label className="flex items-center gap-2 cursor-pointer pt-1">
-                  <input
-                    type="checkbox"
-                    checked={autoDailyReminder}
-                    onChange={e => setAutoDailyReminder(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="font-semibold text-slate-800">Ежедневно отправлять в Telegram сводку по просроченным оплатам и договорам</span>
-                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      URL веб-приложения Google Apps Script (Web App URL):
+                    </label>
+                    <input
+                      type="url"
+                      value={gasUrl}
+                      onChange={e => setGasUrl(e.target.value.trim())}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="w-full border rounded-xl p-2.5 font-mono text-xs focus:ring-1 focus:ring-slate-900 outline-none"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Получается при развертывании: «Развернуть» → «Новое развертывание» → Тип: Веб-приложение → Доступ: «Все» (Anyone).
+                    </p>
+                  </div>
 
-                <div className="pt-2 border-t border-slate-100">
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    API-ключ Groq (`gsk_...`) или OpenAI (`sk-...`) для авто-перевода голосовых из Telegram в текст:
-                  </label>
-                  <input
-                    type="password"
-                    value={sttApiKey}
-                    onChange={e => setSttApiKey(e.target.value)}
-                    placeholder="gsk_... (бесплатный ключ с console.groq.com)"
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      API Secret Key (Секретный ключ защиты):
+                    </label>
+                    <input
+                      type="password"
+                      value={gasApiKey}
+                      onChange={e => setGasApiKey(e.target.value.trim())}
+                      placeholder="SHOWROOM_CRM_SECRET_2026"
+                      className="w-full border rounded-xl p-2.5 font-mono text-xs focus:ring-1 focus:ring-slate-900 outline-none"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Должен совпадать со значением `API_SECRET_KEY` в файле `Code.gs`.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
+                      <span>🛡 Безопасность и управление миграцией:</span>
+                      <span className="text-slate-500 font-normal">
+                        Локально в CRM: <strong className="text-slate-900">{brands.length}</strong> брендов, <strong className="text-slate-900">{aclUsers.length}</strong> пользователей
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Пустой ответ из таблицы никогда не сотрет локальный кэш. Вы можете в любой момент выполнить форс-пуш или загрузку.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={forcePullFromCloud}
+                      className="px-3.5 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl font-semibold transition"
+                      title="Загрузить актуальные данные из Google Таблицы в CRM"
+                    >
+                      ☁️ Загрузить из облака (Pull)
+                    </button>
+                    <button
+                      onClick={performInitialMigration}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold transition shadow-xs"
+                      title="Отправить всю текущую локальную базу в Google Таблицу"
+                    >
+                      ⬆️ Выгрузить локальные данные в Google Таблицу
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
-                <h3 className="font-bold text-base text-slate-900">🚀 Настройка кнопки Mini App в 1 клик</h3>
-                <div>
-                  <label className="block font-semibold mb-1">Ваша ссылка GitHub Pages (HTTPS):</label>
-                  <input
-                    type="url"
-                    value={webAppUrl}
-                    onChange={e => setWebAppUrl(e.target.value)}
-                    className="w-full border rounded-xl p-2.5 font-mono text-xs"
-                  />
+              {/* СЕКЦИЯ 2: ГОЛОСОВОЙ ВВОД И TELEGRAM НАПОМИНАНИЯ */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
+                  <h3 className="font-bold text-base text-slate-900">🎙 Распознавание голосовых (.ogg) из Telegram и Напоминания</h3>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Ваш личный Telegram Chat ID (для ежедневных напоминаний):</label>
+                    <input
+                      type="text"
+                      value={adminChatId}
+                      onChange={e => setAdminChatId(e.target.value)}
+                      placeholder="Определится автоматически, когда вы напишете боту"
+                      className="w-full border rounded-xl p-2.5 font-mono text-xs"
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={autoDailyReminder}
+                      onChange={e => setAutoDailyReminder(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span className="font-semibold text-slate-800">Ежедневно отправлять в Telegram сводку по просроченным оплатам и договорам</span>
+                  </label>
+
+                  <div className="pt-2 border-t border-slate-100">
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      API-ключ Groq (`gsk_...`) или OpenAI (`sk-...`) для авто-перевода голосовых из Telegram в текст:
+                    </label>
+                    <input
+                      type="password"
+                      value={sttApiKey}
+                      onChange={e => setSttApiKey(e.target.value)}
+                      placeholder="gsk_... (бесплатный ключ с console.groq.com)"
+                      className="w-full border rounded-xl p-2.5 font-mono text-xs"
+                    />
+                  </div>
                 </div>
-                <button
-                  onClick={setupBotInTelegram}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition"
-                >
-                  Записать команды (/debts, /stats, /list) и кнопку Menu Button
-                </button>
+
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4 text-xs">
+                  <h3 className="font-bold text-base text-slate-900">🚀 Настройка кнопки Mini App в 1 клик</h3>
+                  <div>
+                    <label className="block font-semibold mb-1">Ваша ссылка GitHub Pages (HTTPS):</label>
+                    <input
+                      type="url"
+                      value={webAppUrl}
+                      onChange={e => setWebAppUrl(e.target.value)}
+                      className="w-full border rounded-xl p-2.5 font-mono text-xs"
+                    />
+                  </div>
+                  <button
+                    onClick={setupBotInTelegram}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition shadow-xs"
+                  >
+                    Записать команды (/debts, /stats, /list) и кнопку Menu Button
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -2216,7 +2732,7 @@
             </div>
           )}
 
-          {/* ДИАЛОГОВОЕ ОКНО ПОДТВЕРЖДЕНИЯ ИЛИ ОТМЕНЫ УДАЛЕНИЯ КАРТОЧКИ БРЕНДА */}
+          {/* ДИАЛОГОВОЕ ОКНО ПОДТВЕРЖДЕНИЯ УДАЛЕНИЯ КАРТОЧКИ БРЕНДА */}
           {brandToDelete && (
             <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60]">
               <div className="bg-white rounded-2xl border border-slate-200 p-6 max-w-sm w-full shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-150">
@@ -2245,6 +2761,64 @@
                     className="flex-1 py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition"
                   >
                     Да, удалить
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛЬНОЕ ОКНО ПЕРВИЧНОЙ МИГРАЦИИ (ANTI-WIPE GUARD & BACKUP) */}
+          {isMigrationModalOpen && (
+            <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-[70]">
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 max-w-lg w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center text-2xl flex-shrink-0">
+                    ☁️
+                  </div>
+                  <div>
+                    <h4 className="text-base font-bold text-slate-900">Инициализация Google Таблицы</h4>
+                    <p className="text-xs text-slate-500">Обнаружена пустая таблица и локальные данные</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs text-slate-700">
+                  <div className="font-semibold text-slate-900 flex items-center gap-1.5">
+                    <span>🛡 Защита от затирания (Anti-Wipe Guard) активна</span>
+                  </div>
+                  <p>
+                    В вашей Google Таблице пока нет сохраненных брендов (0 записей). При этом в локальном хранилище вашего устройства обнаружены реальные данные:
+                  </p>
+                  <ul className="list-disc list-inside space-y-1 font-mono text-[11px] text-slate-600">
+                    <li><strong>{brands.length}</strong> брендов в шоуруме</li>
+                    <li><strong>{aclUsers.length}</strong> участников ролевой модели (ACL)</li>
+                    <li><strong>{auditLogs.length}</strong> записей аудита</li>
+                  </ul>
+                  <p className="text-[11px] text-slate-500 pt-1">
+                    Чтобы сохранить 100% гарантию от сбоев, скачайте резервную копию JSON и выгрузите базу в Google Таблицу.
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={performInitialMigration}
+                    className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <span>⬆️ Выгрузить все данные в Google Таблицу</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadJsonBackup}
+                    className="w-full py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold rounded-xl text-xs transition flex items-center justify-center gap-2"
+                  >
+                    <span>📥 Скачать резервную копию JSON</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsMigrationModalOpen(false)}
+                    className="w-full py-2 px-4 border border-slate-200 hover:bg-slate-100 text-slate-600 font-semibold rounded-xl text-xs transition"
+                  >
+                    Продолжить работу в локальном кэше
                   </button>
                 </div>
               </div>
