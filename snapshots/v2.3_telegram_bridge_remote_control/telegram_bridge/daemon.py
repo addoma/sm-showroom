@@ -127,19 +127,57 @@ def tg_send_chat_action(chat_id: int, action: str = "typing"):
 
 # --- ANTIGRAVITY AGENTAPI INTEGRATION ---
 
+SESSION_FILE = os.path.join(CURRENT_DIR, "session.json")
+
+def get_agent_env() -> dict:
+    env = os.environ.copy()
+    
+    # 1. From in-memory config if synced
+    if CONFIG.get("ls_address"):
+        env["ANTIGRAVITY_LS_ADDRESS"] = CONFIG["ls_address"]
+    if CONFIG.get("csrf_token"):
+        env["ANTIGRAVITY_CSRF_TOKEN"] = CONFIG["csrf_token"]
+        
+    # 2. From session.json
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f)
+                if s.get("ls_address") and "ANTIGRAVITY_LS_ADDRESS" not in env:
+                    env["ANTIGRAVITY_LS_ADDRESS"] = s["ls_address"]
+                if s.get("csrf_token") and "ANTIGRAVITY_CSRF_TOKEN" not in env:
+                    env["ANTIGRAVITY_CSRF_TOKEN"] = s["csrf_token"]
+        except Exception as e:
+            print(f"[Session] Error reading {SESSION_FILE}: {e}", file=sys.stderr)
+            
+    # 3. Fallback: auto-detect hub-port from running agy process
+    if "ANTIGRAVITY_LS_ADDRESS" not in env:
+        try:
+            out = subprocess.check_output(["ps", "aux"], text=True)
+            import re
+            m = re.search(r"--hub-port=(\d+)", out)
+            if m:
+                env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{m.group(1)}"
+        except Exception:
+            pass
+            
+    return env
+
 def send_to_antigravity(text: str) -> bool:
     agentapi_path = CONFIG.get("agentapi_path", "/Applications/Gemini.app/Contents/Helpers/agy")
     conv_id = CONFIG.get("conversation_id", "e942a502-2c31-4a43-9392-a2b04b0a99ba")
     
     cmd = [agentapi_path, "agentapi", "send-message", conv_id, text]
     print(f"[Antigravity] Forwarding message to conversation {conv_id}...", flush=True)
+    
+    env = get_agent_env()
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=15)
         if res.returncode == 0:
             print(f"[Antigravity] Successfully forwarded: {res.stdout.strip()}", flush=True)
             return True
         else:
-            print(f"[Antigravity] agentapi failed (code {res.returncode}): {res.stderr}", file=sys.stderr)
+            print(f"[Antigravity] agentapi failed (code {res.returncode}): {res.stderr} | {res.stdout}", file=sys.stderr)
             return False
     except Exception as e:
         print(f"[Antigravity] Exception running agentapi: {e}", file=sys.stderr)
@@ -390,6 +428,15 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
         # 3. Healthcheck / Ping
         elif path == "/health":
             self._send_json({"status": "ok", "allowed_chat_id": CONFIG.get("allowed_chat_id")})
+            return
+
+        # 4. Sync Antigravity session from hook
+        elif path == "/sync-session":
+            if payload.get("ls_address"):
+                CONFIG["ls_address"] = payload["ls_address"]
+            if payload.get("csrf_token"):
+                CONFIG["csrf_token"] = payload["csrf_token"]
+            self._send_json({"status": "synced"})
             return
 
         else:
