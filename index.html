@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Showroom Brand CRM — Защищенный доступ</title>
   
   <!-- Telegram WebApp SDK -->
@@ -24,6 +24,7 @@
       --tg-safe-bottom: var(--tg-content-safe-area-inset-bottom, var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
       --tg-safe-left: var(--tg-safe-area-inset-left, env(safe-area-inset-left, 0px));
       --tg-safe-right: var(--tg-safe-area-inset-right, env(safe-area-inset-right, 0px));
+      --tg-effective-safe-top: 10px;
     }
 
     html, body {
@@ -32,16 +33,16 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
       overscroll-behavior-y: none; /* Защита от закрытия шторки Telegram при свайпе */
-      background-color: #020617;
+      background-color: #f8fafc;
       min-height: 100vh;
       min-height: var(--tg-viewport-height, 100vh);
     }
 
     /* Поддержка SafeArea и адаптивных отступов для всех режимов Telegram SDK */
     .tma-safe-area {
-      padding-top: max(
-        10px,
-        calc(var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px))) + 8px)
+      padding-top: var(
+        --tg-effective-safe-top,
+        max(10px, calc(var(--tg-content-safe-area-inset-top, var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px))) + 8px))
       );
       padding-bottom: max(
         14px,
@@ -80,6 +81,59 @@
 
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+    // =========================================================
+    // ТОЧНЫЙ РАСЧЕТ ИНСЕТОВ ДЛЯ iOS (NOTCH / DYNAMIC ISLAND / FULLSCREEN)
+    // =========================================================
+    const computeTelegramSafeInsets = () => {
+      const tg = window.Telegram?.WebApp;
+      const isTG = Boolean(tg);
+      const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || 
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+      const contentTop = Number(tg?.contentSafeAreaInset?.top) || 0;
+      const safeTop = Number(tg?.safeAreaInset?.top) || 0;
+      const isFullscreen = Boolean(tg?.isFullscreen);
+
+      let effectiveTop = 10;
+
+      // 1. Приоритет: точный contentSafeAreaInset от Telegram 8.0+
+      // (это расстояние от верха экрана до нижнего края плавающих кнопок Telegram)
+      if (contentTop > 0) {
+        effectiveTop = Math.max(contentTop + 6, 96);
+      }
+      // 2. Telegram сообщает, что включен Fullscreen
+      else if (isFullscreen) {
+        effectiveTop = Math.max((safeTop || 47) + 48, 98);
+      }
+      // 3. Эвристика для Fullscreen на iOS в Telegram Mini App:
+      // На iPhone 12 Pro (и всех iPhone с Notch / Dynamic Island) экран 844px+
+      // Если окно занимает почти весь экран (> 720px) внутри Telegram,
+      // значит нативного хедера нет, а сверху висят кнопки [✕ Закрыть] и [⌄ •••]
+      else if (isTG && isIOS && window.innerWidth < 500 && window.innerHeight > 720) {
+        effectiveTop = 98;
+      }
+      // 4. Обычный безопасный отступ (статус-бар без плавающих кнопок Fullscreen)
+      else if (safeTop > 0) {
+        effectiveTop = safeTop + 8;
+      }
+
+      try {
+        const root = document.documentElement;
+        root.style.setProperty('--tg-effective-safe-top', `${effectiveTop}px`);
+        if (contentTop > 0) {
+          root.style.setProperty('--tg-content-safe-area-inset-top', `${contentTop}px`);
+        }
+        if (safeTop > 0) {
+          root.style.setProperty('--tg-safe-area-inset-top', `${safeTop}px`);
+        }
+      } catch (e) {}
+
+      return effectiveTop;
+    };
+
+    // Мгновенная инициализация отступа до рендера React
+    try { computeTelegramSafeInsets(); } catch (e) {}
 
     // ==========================================
     // НЕОСПОРИМЫЕ ДАННЫЕ ВЛАДЕЛЬЦА (HARDCODED)
@@ -623,6 +677,7 @@
       const [isFinanceCollapsed, setIsFinanceCollapsed] = useState(() => {
         return window.innerWidth < 640;
       });
+      const [topSafeInset, setTopSafeInset] = useState(() => computeTelegramSafeInsets());
       const [isModalOpen, setIsModalOpen] = useState(false);
       const [editingBrand, setEditingBrand] = useState(null);
       const [brandToDelete, setBrandToDelete] = useState(null);
@@ -744,12 +799,12 @@
               try { tg.enableClosingConfirmation(); } catch (e) {}
             }
 
-            // Установка цвета фона и шапки для системного статус-бара iOS
+            // Установка цвета фона и шапки для системного статус-бара iOS (соответствует фону CRM #f8fafc)
             if (typeof tg.setHeaderColor === 'function') {
-              try { tg.setHeaderColor('#020617'); } catch (e) {}
+              try { tg.setHeaderColor('#f8fafc'); } catch (e) {}
             }
             if (typeof tg.setBackgroundColor === 'function') {
-              try { tg.setBackgroundColor('#020617'); } catch (e) {}
+              try { tg.setBackgroundColor('#f8fafc'); } catch (e) {}
             }
           }
 
@@ -819,24 +874,44 @@
       // --- ПОДДЕРЖКА ДИНАМИЧЕСКИХ РЕЖИМОВ TELEGRAM SDK (FULLSCREEN, FULLSIZE, COMPACT) ---
       useEffect(() => {
         const tg = window.Telegram?.WebApp;
-        if (!tg) return;
 
-        const handleViewportChange = () => {
-          if (tg.isExpanded === false) {
-            try { tg.expand(); } catch (e) {}
-          }
+        const updateSafeInsets = () => {
+          const val = computeTelegramSafeInsets();
+          setTopSafeInset(val);
         };
 
-        tg.onEvent?.('viewportChanged', handleViewportChange);
-        tg.onEvent?.('safeAreaChanged', handleViewportChange);
-        tg.onEvent?.('contentSafeAreaChanged', handleViewportChange);
-        window.addEventListener('resize', handleViewportChange);
+        // Запуск немедленно и через короткие интервалы после разворачивания/анимации окна
+        updateSafeInsets();
+        const t1 = setTimeout(updateSafeInsets, 100);
+        const t2 = setTimeout(updateSafeInsets, 350);
+
+        const handleViewportChange = () => {
+          if (tg && tg.isExpanded === false) {
+            try { tg.expand(); } catch (e) {}
+          }
+          updateSafeInsets();
+        };
+
+        if (tg) {
+          tg.onEvent?.('fullscreenChanged', updateSafeInsets);
+          tg.onEvent?.('safeAreaChanged', updateSafeInsets);
+          tg.onEvent?.('contentSafeAreaChanged', updateSafeInsets);
+          tg.onEvent?.('viewportChanged', handleViewportChange);
+        }
+        window.addEventListener('resize', updateSafeInsets);
+        window.addEventListener('orientationchange', updateSafeInsets);
 
         return () => {
-          tg.offEvent?.('viewportChanged', handleViewportChange);
-          tg.offEvent?.('safeAreaChanged', handleViewportChange);
-          tg.offEvent?.('contentSafeAreaChanged', handleViewportChange);
-          window.removeEventListener('resize', handleViewportChange);
+          clearTimeout(t1);
+          clearTimeout(t2);
+          if (tg) {
+            tg.offEvent?.('fullscreenChanged', updateSafeInsets);
+            tg.offEvent?.('safeAreaChanged', updateSafeInsets);
+            tg.offEvent?.('contentSafeAreaChanged', updateSafeInsets);
+            tg.offEvent?.('viewportChanged', handleViewportChange);
+          }
+          window.removeEventListener('resize', updateSafeInsets);
+          window.removeEventListener('orientationchange', updateSafeInsets);
         };
       }, []);
 
@@ -1802,7 +1877,10 @@
       // =========================================================
       if (authState.status === 'checking') {
         return (
-          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area">
+          <div
+            className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area"
+            style={{ paddingTop: `${topSafeInset}px` }}
+          >
             <div className="text-slate-500 text-xs font-mono tracking-widest uppercase animate-pulse">
               Проверка криптографической подписи Telegram API...
             </div>
@@ -1812,7 +1890,10 @@
 
       if (authState.status !== 'authorized') {
         return (
-          <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area">
+          <div
+            className="min-h-screen bg-slate-950 flex items-center justify-center p-6 select-none tma-safe-area"
+            style={{ paddingTop: `${topSafeInset}px` }}
+          >
             <div className="bg-slate-900 border border-slate-800 rounded-2xl px-8 py-7 shadow-2xl text-center max-w-xs w-full">
               <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-500 flex items-center justify-center mx-auto mb-3 text-xl font-bold">
                 🔒
@@ -1855,7 +1936,10 @@
       // ОСНОВНОЙ ИНТЕРФЕЙС
       // =========================================================
       return (
-        <div className="tma-safe-area bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto w-full">
+        <div
+          className="tma-safe-area bg-slate-50 text-slate-900 flex flex-col max-w-[1600px] mx-auto w-full transition-[padding-top] duration-150"
+          style={{ paddingTop: `${topSafeInset}px` }}
+        >
           {/* Всплывающее уведомление */}
           {toast && (
             <div className="fixed bottom-6 right-4 left-4 sm:left-auto z-50 bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-semibold border border-slate-700 animate-in fade-in duration-200 text-center sm:text-left">
@@ -2253,7 +2337,7 @@
                   type="text"
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Поиск бренда, @tg, телефона..."
+                  placeholder={window.innerWidth < 640 ? "Поиск..." : "Поиск бренда, @tg, телефона..."}
                   className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full sm:w-64 outline-none focus:ring-1 focus:ring-slate-900"
                 />
               </div>
