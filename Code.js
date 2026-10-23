@@ -40,7 +40,8 @@ var BRAND_HEADERS = [
   "paidMonth",
   "lastContact",
   "notes",
-  "updatedAt"
+  "updatedAt",
+  "assignedPlaces"
 ];
 
 var ACL_HEADERS = [

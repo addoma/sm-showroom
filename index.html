@@ -152,6 +152,168 @@
       user: { id: 'user', title: 'Пользователь', badge: 'bg-sky-100 text-sky-800 font-semibold border-sky-200' }
     };
 
+    const DEFAULT_SHOWROOM_CONFIG = {
+      totalRails: 22,       // 22 физических рейла по умолчанию
+      totalShelves: 10,     // 10 полок для обуви и сумок
+      totalCorners: 3,      // 3 выделенных корнера
+      totalAccessories: 6,  // 6 стоек / витрин для аксессуаров
+      defaultRailFee: 30000 // базовая арендная ставка для расчета потенциала
+    };
+
+    const MONTH_NAMES_RU = [
+      'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+      'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+    ];
+
+    const MONTH_NAMES_GENITIVE_RU = [
+      'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+    ];
+
+    const DAYS_OF_WEEK_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+    function parseAssignedPlaces(str) {
+      if (!str) return [];
+      if (Array.isArray(str)) return str.map(s => String(s).trim()).filter(Boolean);
+      return String(str)
+        .split(/[,;\n]/)
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    function formatAssignedPlaces(places) {
+      if (!places || !places.length) return '';
+      return places.join(', ');
+    }
+
+    function getPlaceSlotsForRail(railNum, activeBrands) {
+      const fullOccupants = [];
+      const halfOccupants = [];
+
+      (activeBrands || []).forEach(brand => {
+        const places = parseAssignedPlaces(brand.assignedPlaces);
+        places.forEach(p => {
+          const pNorm = p.trim();
+          const isFull = new RegExp(`^Рейл\\s*#?${railNum}$`, 'i').test(pNorm);
+          const isHalf = new RegExp(`^Рейл\\s*#?${railNum}\\s*\\(1\\/2`, 'i').test(pNorm);
+          if (isFull) {
+            fullOccupants.push({ brand, placeStr: pNorm, fraction: 1.0 });
+          } else if (isHalf) {
+            halfOccupants.push({ brand, placeStr: pNorm, fraction: 0.5 });
+          }
+        });
+      });
+
+      const isFullyOccupied = fullOccupants.length > 0 || halfOccupants.length >= 2;
+      const fractionOccupied = fullOccupants.length > 0 ? 1.0 : Math.min(1.0, halfOccupants.length * 0.5);
+
+      return {
+        railNum,
+        isFullyOccupied,
+        fullOccupant: fullOccupants[0] || null,
+        halfOccupants,
+        fractionOccupied
+      };
+    }
+
+    function getPlaceSlotsForSingle(placePrefix, totalCount, activeBrands) {
+      const items = [];
+      for (let i = 1; i <= totalCount; i++) {
+        const placeName = `${placePrefix} ${i}`;
+        let occupant = null;
+        let placeStr = placeName;
+
+        for (const b of (activeBrands || [])) {
+          const places = parseAssignedPlaces(b.assignedPlaces);
+          const match = places.find(p => new RegExp(`^${placePrefix}\\s*#?${i}$`, 'i').test(p.trim()));
+          if (match) {
+            occupant = b;
+            placeStr = match;
+            break;
+          }
+        }
+
+        items.push({
+          index: i,
+          placeName,
+          placeStr,
+          occupant,
+          isOccupied: Boolean(occupant)
+        });
+      }
+      return items;
+    }
+
+    function calculateShowroomOccupancy(brands, config) {
+      const activeBrands = (brands || []).filter(b => b.stage === 'active');
+      const totalRails = config?.totalRails || 22;
+      const totalShelves = config?.totalShelves || 10;
+      const totalCorners = config?.totalCorners || 3;
+      const totalAccessories = config?.totalAccessories || 6;
+      const defaultRailFee = config?.defaultRailFee || 30000;
+
+      let occupiedRailsFraction = 0;
+      for (let i = 1; i <= totalRails; i++) {
+        const info = getPlaceSlotsForRail(i, activeBrands);
+        occupiedRailsFraction += info.fractionOccupied;
+      }
+
+      const shelves = getPlaceSlotsForSingle('Полка', totalShelves, activeBrands);
+      const occupiedShelves = shelves.filter(s => s.isOccupied).length;
+
+      const corners = getPlaceSlotsForSingle('Корнер', totalCorners, activeBrands);
+      const occupiedCorners = corners.filter(c => c.isOccupied).length;
+
+      const accessories = getPlaceSlotsForSingle('Стойка', totalAccessories, activeBrands);
+      const occupiedAccessories = accessories.filter(a => a.isOccupied).length;
+
+      const freeRails = Math.max(0, totalRails - occupiedRailsFraction);
+      const railsPct = Math.round((occupiedRailsFraction / totalRails) * 100);
+
+      const totalAllPlaces = totalRails + totalShelves + totalCorners + totalAccessories;
+      const occupiedAllPlaces = occupiedRailsFraction + occupiedShelves + occupiedCorners + occupiedAccessories;
+      const totalOccupancyPct = Math.round((occupiedAllPlaces / totalAllPlaces) * 100);
+
+      const extraRailPotential = Math.round(freeRails * defaultRailFee);
+
+      return {
+        totalRails,
+        occupiedRailsFraction,
+        freeRails,
+        railsPct,
+        totalShelves,
+        occupiedShelves,
+        totalCorners,
+        occupiedCorners,
+        totalAccessories,
+        occupiedAccessories,
+        totalAllPlaces,
+        occupiedAllPlaces,
+        totalOccupancyPct,
+        extraRailPotential
+      };
+    }
+
+    function getBrandPaymentStatus(brand, selectedMonthKey) {
+      if (brand.stage !== 'active') return 'inactive';
+      if (brand.paidMonth === selectedMonthKey) return 'paid';
+
+      const currentMonth = getCurrentMonthKey();
+      const payDay = Number(brand.paymentDay) || 1;
+      const todayDay = new Date().getDate();
+
+      if (selectedMonthKey < currentMonth) {
+        return 'overdue';
+      }
+      if (selectedMonthKey > currentMonth) {
+        return 'pending';
+      }
+      // Текущий месяц:
+      if (todayDay > payDay) return 'overdue';
+      if (todayDay === payDay) return 'due_today';
+      return 'pending';
+    }
+
     const getCurrentMonthKey = () => {
       const now = new Date();
       return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -328,6 +490,7 @@
         website: 'https://krakatauwear.com',
         stage: 'replied',
         railFormat: '2 рейла + полка',
+        assignedPlaces: 'Рейл 1, Рейл 2, Полка 1',
         monthlyFee: 35000,
         commission: '25%',
         paymentDay: 15,
@@ -346,9 +509,10 @@
         website: 'https://shuclothes.com',
         stage: 'contract',
         railFormat: 'Корнер 4 м²',
+        assignedPlaces: 'Корнер 1',
         monthlyFee: 45000,
         commission: '20%',
-        paymentDay: 10,
+        paymentDay: 1,
         paidMonth: '',
         lastContact: '2026-10-18',
         notes: 'Согласовали условия. Отправил шаблон договора, ждем скан с подписью.'
@@ -364,6 +528,7 @@
         website: 'https://gate31.ru',
         stage: 'contacted',
         railFormat: '1 рейл (1.5 м)',
+        assignedPlaces: 'Рейл 3 (1/2)',
         monthlyFee: 25000,
         commission: '30%',
         paymentDay: 5,
@@ -382,9 +547,10 @@
         website: 'https://volchok.ru',
         stage: 'active',
         railFormat: '1 рейл + стойка',
+        assignedPlaces: 'Рейл 4, Стойка 1',
         monthlyFee: 30000,
         commission: '25%',
-        paymentDay: 10,
+        paymentDay: 1,
         paidMonth: '',
         lastContact: '2026-10-10',
         notes: 'Поставка принята. Отлично продаются худи и базовые футболки.'
@@ -400,6 +566,7 @@
         website: 'https://outlaw.ru',
         stage: 'lead',
         railFormat: '1 рейл',
+        assignedPlaces: 'Рейл 5',
         monthlyFee: 30000,
         commission: '25%',
         paymentDay: 1,
@@ -626,7 +793,9 @@
           monthlyFee = num < 1000 ? num * 1000 : num;
         }
         const dayMatch = cleanBody.match(/до\s*(\d{1,2})\s*числа/i);
-        const paymentDay = dayMatch ? Math.min(31, Math.max(1, parseInt(dayMatch[1], 10))) : 10;
+        const paymentDay = dayMatch ? Math.min(31, Math.max(1, parseInt(dayMatch[1], 10))) : 1;
+        const placeMatch = cleanBody.match(/((?:рейл|полка|корнер|стойка)\s*#?\d+(?:\s*\((?:1\/2|\d\/\d)\))?)/i);
+        const assignedPlaces = placeMatch ? placeMatch[1] : '';
 
         let namePart = cleanBody
           .split(/[,\n|]/)[0]
@@ -634,6 +803,7 @@
           .replace(/(\+?[78][\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})/g, '')
           .replace(/(\d{2,3})\s*(тыс|к|k|000|\s*₽|\s*руб)/gi, '')
           .replace(/до\s*\d{1,2}\s*числа/gi, '')
+          .replace(/(?:рейл|полка|корнер|стойка)\s*#?\d+(?:\s*\((?:1\/2|\d\/\d)\))?/gi, '')
           .trim();
         if (!namePart) namePart = 'Новый Бренд';
 
@@ -645,6 +815,7 @@
             phone,
             monthlyFee,
             paymentDay,
+            assignedPlaces,
             stage: detectStageFromText(cleanBody) || 'lead',
             notes: `Добавлено через бот/голос: «${cleanBody}»`
           }
@@ -785,6 +956,46 @@
       const [brandToDelete, setBrandToDelete] = useState(null);
       const [toast, setToast] = useState(null);
       const [webAppUrl, setWebAppUrl] = useState(() => localStorage.getItem('sm_crm_webapp_url') || window.location.href);
+
+      // Конфигурация и вместимость шоурума
+      const [showroomConfig, setShowroomConfig] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_showroom_config_v1');
+        if (saved) {
+          try { return { ...DEFAULT_SHOWROOM_CONFIG, ...JSON.parse(saved) }; } catch (e) {}
+        }
+        return DEFAULT_SHOWROOM_CONFIG;
+      });
+
+      useEffect(() => {
+        localStorage.setItem('sm_crm_showroom_config_v1', JSON.stringify(showroomConfig));
+      }, [showroomConfig]);
+
+      // Подвкладки в разделе «Финансы & Зал»: 'map' (План зала & Рейлы) | 'calendar' (Календарь оплат) | 'table' (Реестр)
+      const [financeSubView, setFinanceSubView] = useState('map');
+      // Фильтр зон на плане зала: 'all' | 'rail' | 'shelf' | 'corner' | 'accessory'
+      const [mapZoneFilter, setMapZoneFilter] = useState('all');
+
+      // Выбранный месяц и год в Календаре оплат
+      const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
+      const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth());
+
+      // Модальные окна модуля Showroom Management
+      const [selectedDayDetails, setSelectedDayDetails] = useState(null);
+      const [placeToAssign, setPlaceToAssign] = useState(null);
+      const [isCapacitySettingsOpen, setIsCapacitySettingsOpen] = useState(false);
+
+      // Закрепленные места для открытого в модалке бренда
+      const [brandPlaces, setBrandPlaces] = useState([]);
+      const [customPlaceInput, setCustomPlaceInput] = useState('');
+      const [isAddingCustomPlace, setIsAddingCustomPlace] = useState(false);
+
+      const openBrandModal = (brand = null) => {
+        setEditingBrand(brand);
+        setBrandPlaces(parseAssignedPlaces(brand?.assignedPlaces || ''));
+        setIsAddingCustomPlace(false);
+        setCustomPlaceInput('');
+        setIsModalOpen(true);
+      };
 
       const moreMenuRef = useRef(null);
 
@@ -1667,7 +1878,7 @@
         }
 
         if (upcomingBrands.length > 0) {
-          lines.push(`⏳ Ожидаем оплату в этом месяце: ${upcomingBrands.map(b => `${b.name} (до ${b.paymentDay} числа)`).join(', ')}`);
+          lines.push(`⏳ Ожидаем оплату в этом месяце: ${upcomingBrands.map(b => `${b.name} (до ${b.paymentDay || 1} числа)`).join(', ')}`);
         }
 
         return lines.join('\n');
@@ -1914,9 +2125,10 @@
             phone: action.payload.phone,
             stage: action.payload.stage,
             railFormat: '1 рейл',
+            assignedPlaces: action.payload.assignedPlaces || '',
             monthlyFee: action.payload.monthlyFee,
             commission: '25%',
-            paymentDay: action.payload.paymentDay || 10,
+            paymentDay: action.payload.paymentDay || 1,
             paidMonth: '',
             lastContact: getTodayDateString(),
             notes: action.payload.notes
@@ -1924,7 +2136,7 @@
           setBrands(prev => [newB, ...prev]);
           queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, newB, 'create'));
           addAuditLog('ДАННЫЕ БРЕНДОВ', `Создан бренд «${newB.name}» (аренда ${newB.monthlyFee} ₽)`, customActor);
-          resp = `✅ Добавлен бренд «${newB.name}»\n• Статус: ${STAGES.find(s => s.id === newB.stage)?.short}\n• Аренда: ${newB.monthlyFee.toLocaleString('ru-RU')} ₽ (до ${newB.paymentDay} числа)`;
+          resp = `✅ Добавлен бренд «${newB.name}»\n• Статус: ${STAGES.find(s => s.id === newB.stage)?.short}\n• Аренда: ${newB.monthlyFee.toLocaleString('ru-RU')} ₽ (до ${newB.paymentDay || 1} числа)${newB.assignedPlaces ? '\n• Место: ' + newB.assignedPlaces : ''}`;
           showToast(`Добавлен: ${newB.name}`);
         } else if (action.type === 'UPDATE_STAGE') {
           const oldStageTitle = STAGES.find(s => s.id === action.brand.stage)?.short;
@@ -1946,7 +2158,7 @@
           if (action.brand) {
             const b = action.brand;
             const isPaid = b.paidMonth === getCurrentMonthKey();
-            resp = `🔎 ${b.name}\n• Этап: ${STAGES.find(s => s.id === b.stage)?.title}\n• Telegram: ${b.tgUsername ? '@' + b.tgUsername : '—'}\n• Телефон: ${b.phone || '—'}\n• Аренда: ${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ (до ${b.paymentDay || 10} числа)\n• Оплата: ${isPaid ? '✅ Оплачено' : '⏳ Не оплачено'}\n• Заметки: ${b.notes || '—'}`;
+            resp = `🔎 ${b.name}\n• Этап: ${STAGES.find(s => s.id === b.stage)?.title}\n• Место: ${b.assignedPlaces || '—'}\n• Telegram: ${b.tgUsername ? '@' + b.tgUsername : '—'}\n• Телефон: ${b.phone || '—'}\n• Аренда: ${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ (до ${b.paymentDay || 1} числа)\n• Оплата: ${isPaid ? '✅ Оплачено' : '⏳ Не оплачено'}\n• Заметки: ${b.notes || '—'}`;
           } else {
             resp = `❓ Бренд «${action.query}» не найден в базе.`;
           }
@@ -2050,9 +2262,10 @@
           phone: fd.get('phone').trim(),
           stage: fd.get('stage'),
           railFormat: fd.get('railFormat').trim() || '1 рейл',
+          assignedPlaces: formatAssignedPlaces(brandPlaces),
           monthlyFee: Number(fd.get('monthlyFee')) || 0,
           commission: (fd.get('commission') || '').trim() || '25%',
-          paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 10)),
+          paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 1)),
           paidMonth: isPaidChecked ? curMonth : '',
           lastContact: getTodayDateString(),
           notes: fd.get('notes').trim()
@@ -2061,16 +2274,77 @@
         if (editingBrand) {
           setBrands(brands.map(b => b.id === data.id ? data : b));
           queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, data, 'update'));
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Отредактирована карточка бренда «${data.name}» (этап: ${STAGES.find(s => s.id === data.stage)?.short}, аренда: ${data.monthlyFee} ₽)`);
+          addAuditLog('ДАННЫЕ БРЕНДОВ', `Отредактирована карточка бренда «${data.name}» (этап: ${STAGES.find(s => s.id === data.stage)?.short}, аренда: ${data.monthlyFee} ₽${data.assignedPlaces ? ', места: ' + data.assignedPlaces : ''})`);
           showToast(`Бренд ${data.name} обновлен`);
         } else {
           setBrands([data, ...brands]);
           queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, data, 'create'));
-          addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлен новый бренд «${data.name}» (аренда: ${data.monthlyFee} ₽)`);
+          addAuditLog('ДАННЫЕ БРЕНДОВ', `Добавлен новый бренд «${data.name}» (аренда: ${data.monthlyFee} ₽${data.assignedPlaces ? ', места: ' + data.assignedPlaces : ''})`);
           showToast(`Бренд ${data.name} добавлен`);
         }
         setIsModalOpen(false);
         setEditingBrand(null);
+      };
+
+      // Быстрое освобождение места на плане зала
+      const handleReleasePlace = (brandId, placeStr) => {
+        const brand = brands.find(b => b.id === brandId);
+        if (!brand) return;
+        if (!confirm(`Освободить место «${placeStr}» у бренда «${brand.name}»?`)) return;
+
+        const currentPlaces = parseAssignedPlaces(brand.assignedPlaces);
+        const updatedPlaces = currentPlaces.filter(p => p !== placeStr);
+        const updatedBrand = { ...brand, assignedPlaces: formatAssignedPlaces(updatedPlaces) };
+
+        setBrands(brands.map(b => b.id === brandId ? updatedBrand : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
+        addAuditLog('ЗАЛ', `Освобождено место «${placeStr}» (бренд «${brand.name}»)`);
+        showToast(`Место «${placeStr}» теперь свободно`);
+      };
+
+      // Быстрое заселение бренда на свободное место
+      const handleQuickAssignPlace = (brandId, placeStr, shouldActivate = true) => {
+        const brand = brands.find(b => b.id === brandId);
+        if (!brand) return;
+
+        const currentPlaces = parseAssignedPlaces(brand.assignedPlaces);
+        if (!currentPlaces.includes(placeStr)) {
+          currentPlaces.push(placeStr);
+        }
+        const updatedBrand = {
+          ...brand,
+          assignedPlaces: formatAssignedPlaces(currentPlaces),
+          stage: shouldActivate && brand.stage !== 'active' ? 'active' : brand.stage
+        };
+
+        setBrands(brands.map(b => b.id === brandId ? updatedBrand : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
+        addAuditLog('ЗАЛ', `Бренд «${brand.name}» заселен на место «${placeStr}»`);
+        showToast(`Бренд ${brand.name} заселен на «${placeStr}»!`);
+        setPlaceToAssign(null);
+      };
+
+      // Переключение статуса оплаты для конкретного месяца (из календаря)
+      const handleTogglePaymentForMonth = (brandId, monthKey) => {
+        const brand = brands.find(b => b.id === brandId);
+        if (!brand) return;
+
+        const isPaid = brand.paidMonth === monthKey;
+        const newPaidMonth = isPaid ? '' : monthKey;
+        const updatedBrand = { ...brand, paidMonth: newPaidMonth };
+
+        setBrands(brands.map(b => b.id === brandId ? updatedBrand : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updatedBrand, 'update'));
+        addAuditLog('ФИНАНСЫ', isPaid ? `Снята отметка оплаты бренда «${brand.name}» за ${monthKey}` : `Отмечена оплата бренда «${brand.name}» за ${monthKey}`);
+        showToast(isPaid ? `Отметка оплаты снята` : `Оплата ${brand.name} отмечена!`);
+
+        setSelectedDayDetails(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            brands: prev.brands.map(b => b.id === brandId ? updatedBrand : b)
+          };
+        });
       };
 
       const setupBotInTelegram = async () => {
@@ -2117,6 +2391,7 @@
         const pendingRevenue = unpaidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
         const overdueRevenue = overdueBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
         const contractPotential = contractBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
+        const showroomOccupancy = calculateShowroomOccupancy(brands, showroomConfig);
 
         return {
           activeBrands,
@@ -2128,9 +2403,10 @@
           receivedRevenue,
           pendingRevenue,
           overdueRevenue,
-          contractPotential
+          contractPotential,
+          showroomOccupancy
         };
-      }, [brands]);
+      }, [brands, showroomConfig]);
 
       const filteredBrands = brands.filter(b => {
         const matchesQuery =
@@ -2388,7 +2664,7 @@
                 🔔
               </button>
               <button
-                onClick={() => { setEditingBrand(null); setIsModalOpen(true); }}
+                onClick={() => openBrandModal(null)}
                 className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs active:scale-95 transition"
               >
                 <span>+ Бренд</span>
@@ -2482,7 +2758,7 @@
               <button onClick={() => fetchBotUpdates(false)} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-semibold text-slate-700 transition">
                 🔄 {isSyncing ? 'Синхр...' : 'Обновить ТГ'}
               </button>
-              <button onClick={() => { setEditingBrand(null); setIsModalOpen(true); }} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition shadow-xs">
+              <button onClick={() => openBrandModal(null)} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition shadow-xs">
                 + Добавить бренд
               </button>
             </div>
@@ -2496,7 +2772,7 @@
                 <div>
                   <span className="font-bold">Просрочена оплата ({financeStats.overdueBrands.length} шт. на {financeStats.overdueRevenue.toLocaleString('ru-RU')} ₽): </span>
                   <span>
-                    {financeStats.overdueBrands.map(b => `${b.name} (до ${b.paymentDay || 10})`).join(', ')}
+                    {financeStats.overdueBrands.map(b => `${b.name} (до ${b.paymentDay || 1})`).join(', ')}
                   </span>
                 </div>
               </div>
@@ -2813,7 +3089,7 @@
                                     <div className="font-bold text-sm text-slate-900 truncate">{brand.name}</div>
                                     <div className="text-[11px] text-slate-500 truncate">{brand.category}</div>
                                   </div>
-                                  <button onClick={() => { setEditingBrand(brand); setIsModalOpen(true); }} className="text-slate-400 hover:text-slate-700 text-xs p-1 shrink-0" title="Редактировать карточку">✎</button>
+                                  <button onClick={() => openBrandModal(brand)} className="text-slate-400 hover:text-slate-700 text-xs p-1 shrink-0" title="Редактировать карточку">✎</button>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -2830,7 +3106,7 @@
                                 </div>
 
                                 <div className="flex items-center justify-between text-[11px] text-slate-600 pt-1 border-t border-slate-100">
-                                  <span>До {brand.paymentDay || 10} числа</span>
+                                  <span>До {brand.paymentDay || 1} числа</span>
                                   <span className="font-bold text-slate-900">{(Number(brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽/мес</span>
                                 </div>
 
@@ -2845,7 +3121,7 @@
                                         : 'bg-amber-50 text-amber-800 border-amber-200'
                                     }`}
                                   >
-                                    {isPaid ? '✅ Оплачено в этом мес.' : overdue ? `🚨 Просрочено (до ${brand.paymentDay || 10} числа)` : `⏳ Ожидает (до ${brand.paymentDay || 10} числа)`}
+                                    {isPaid ? '✅ Оплачено в этом мес.' : overdue ? `🚨 Просрочено (до ${brand.paymentDay || 1} числа)` : `⏳ Ожидает (до ${brand.paymentDay || 1} числа)`}
                                   </button>
                                 )}
 
@@ -2892,74 +3168,905 @@
             </div>
           )}
 
-          {/* ВКЛАДКА 2: ФИНАНСЫ И ОПЛАТЫ */}
+          {/* ВКЛАДКА 2: ШОУРУМ, УЧЕТ РЕЙЛОВ И КАЛЕНДАРЬ ОПЛАТ */}
           {activeTab === 'finance' && (
-            <div className="space-y-6">
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs">
-                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div className="space-y-4 sm:space-y-5">
+              {/* ВИДЖЕТ ВМЕСТИМОСТИ ШОУРУМА (SHOWROOM CAPACITY HERO BANNER) */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-bold text-sm text-slate-900">📅 График ежемесячных платежей ({currentMonthKey})</h3>
-                    <p className="text-xs text-slate-500">Если оплата не отмечена до указанного числа — бот присылает ежедневное напоминание.</p>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                        <span>🏬 Загрузка зала и план оплат</span>
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                        {financeStats.showroomOccupancy.railsPct}% рейлов занято
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Физический учет рейлов (целиком и 1/2), полок для обуви и сумок, корнеров и аксессуаров.
+                    </p>
                   </div>
-                  <button
-                    onClick={() => sendDailyReminderToTelegram(true)}
-                    className="px-3.5 py-2 bg-slate-900 text-white rounded-xl text-xs font-semibold"
-                  >
-                    ✈️ Отправить напоминание в Telegram
-                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsCapacitySettingsOpen(true)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1 border border-slate-200"
+                      title="Настроить количество рейлов, полок и корнеров"
+                    >
+                      <span>⚙️</span>
+                      <span>Настройки зала</span>
+                    </button>
+                    <button
+                      onClick={() => sendDailyReminderToTelegram(true)}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition flex items-center gap-1 shadow-xs"
+                      title="Отправить сводку по оплатам в Telegram"
+                    >
+                      <span>✈️</span>
+                      <span>Сводка в TG</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
-                      <tr>
-                        <th className="p-3">Бренд</th>
-                        <th className="p-3">Контакты</th>
-                        <th className="p-3">Формат размещения</th>
-                        <th className="p-3">Сумма в месяц</th>
-                        <th className="p-3">День оплаты</th>
-                        <th className="p-3">Статус за {currentMonthKey}</th>
-                        <th className="p-3 text-right">Действие</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {financeStats.activeBrands.map(b => {
-                        const isPaid = b.paidMonth === currentMonthKey;
-                        const overdue = isBrandOverdue(b);
-                        return (
-                          <tr key={b.id} className={overdue ? 'bg-rose-50/50' : ''}>
-                            <td className="p-3 font-bold text-slate-900">{b.name}</td>
-                            <td className="p-3">
-                              {b.tgUsername && <a href={`https://t.me/${b.tgUsername.replace('@','')}`} target="_blank" className="text-sky-600 font-medium mr-2">@{b.tgUsername.replace('@','')}</a>}
-                              {b.phone && <a href={`tel:${b.phone}`} className="text-emerald-700">{b.phone}</a>}
-                            </td>
-                            <td className="p-3 text-slate-600">{b.railFormat} (комиссия {b.commission})</td>
-                            <td className="p-3 font-bold text-slate-900">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</td>
-                            <td className="p-3 font-semibold">До {b.paymentDay || 10}-го числа</td>
-                            <td className="p-3">
-                              {isPaid ? (
-                                <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">✅ Оплачено</span>
-                              ) : overdue ? (
-                                <span className="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">🚨 Просрочено!</span>
-                              ) : (
-                                <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">⏳ Ожидает оплаты</span>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              <button
-                                onClick={() => toggleBrandPaidStatus(b.id)}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${isPaid ? 'bg-slate-200 text-slate-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
-                              >
-                                {isPaid ? 'Снять отметку' : 'Отметить оплату'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                {/* Шкала прогресса занятости рейлов */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-semibold text-slate-700">
+                      Рейлы для одежды: <strong className="text-slate-900">{financeStats.showroomOccupancy.occupiedRailsFraction}</strong> из {financeStats.showroomOccupancy.totalRails} занято
+                    </span>
+                    <span className="text-slate-500 font-medium">
+                      Свободно: <strong className="text-emerald-700">{financeStats.showroomOccupancy.freeRails}</strong> рейлов
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200/60 p-0.5">
+                    <div
+                      className="bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-500 h-full rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, Math.max(2, financeStats.showroomOccupancy.railsPct))}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Дополнительные зоны и финансовый потенциал */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1 text-xs">
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <div className="text-[10px] text-slate-500">👟 Обувь и сумки (Полки):</div>
+                    <div className="font-bold text-slate-900 text-sm mt-0.5">
+                      {financeStats.showroomOccupancy.occupiedShelves} / {financeStats.showroomOccupancy.totalShelves}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Свободно {Math.max(0, financeStats.showroomOccupancy.totalShelves - financeStats.showroomOccupancy.occupiedShelves)} полок
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <div className="text-[10px] text-slate-500">✨ Корнеры / Зоны:</div>
+                    <div className="font-bold text-slate-900 text-sm mt-0.5">
+                      {financeStats.showroomOccupancy.occupiedCorners} / {financeStats.showroomOccupancy.totalCorners}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Свободно {Math.max(0, financeStats.showroomOccupancy.totalCorners - financeStats.showroomOccupancy.occupiedCorners)} корнеров
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <div className="text-[10px] text-slate-500">💍 Стойки (Аксессуары):</div>
+                    <div className="font-bold text-slate-900 text-sm mt-0.5">
+                      {financeStats.showroomOccupancy.occupiedAccessories} / {financeStats.showroomOccupancy.totalAccessories}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Свободно {Math.max(0, financeStats.showroomOccupancy.totalAccessories - financeStats.showroomOccupancy.occupiedAccessories)} мест
+                    </div>
+                  </div>
+
+                  <div className="bg-emerald-50/50 p-2.5 rounded-xl border border-emerald-200">
+                    <div className="text-[10px] text-emerald-800">Потенциал допродажи:</div>
+                    <div className="font-bold text-emerald-800 text-sm mt-0.5">
+                      +{financeStats.showroomOccupancy.extraRailPotential.toLocaleString('ru-RU')} ₽/мес
+                    </div>
+                    <div className="text-[10px] text-emerald-700 mt-0.5">
+                      При 100% заполнении: ~{(financeStats.plannedRevenue + financeStats.showroomOccupancy.extraRailPotential).toLocaleString('ru-RU')} ₽
+                    </div>
+                  </div>
                 </div>
               </div>
+
+              {/* ПЕРЕКЛЮЧАТЕЛЬ ПОДВКЛАДОК В РАЗДЕЛЕ «ФИНАНСЫ & ЗАЛ» */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-xl text-xs font-semibold">
+                  <button
+                    onClick={() => setFinanceSubView('map')}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'map' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    <span>🏬 План зала & Рейлы</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-100 text-slate-700">
+                      {financeStats.showroomOccupancy.occupiedRailsFraction}/{financeStats.showroomOccupancy.totalRails}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setFinanceSubView('calendar')}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'calendar' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    <span>📅 Календарь оплат</span>
+                    {financeStats.overdueBrands.length > 0 && (
+                      <span className="px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
+                        {financeStats.overdueBrands.length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => setFinanceSubView('table')}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'table' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    <span>📋 Реестр платежей</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-100 text-slate-700">
+                      {financeStats.activeBrands.length}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* ПОДВИД 1: ИНТЕРАКТИВНЫЙ ПЛАН ЗАЛА & РЕЙЛЫ */}
+              {financeSubView === 'map' && (
+                <div className="space-y-4">
+                  {/* Фильтры зон */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold">
+                    <button
+                      onClick={() => setMapZoneFilter('all')}
+                      className={`px-3 py-1.5 rounded-xl transition ${mapZoneFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      🏬 Все зоны
+                    </button>
+                    <button
+                      onClick={() => setMapZoneFilter('rail')}
+                      className={`px-3 py-1.5 rounded-xl transition ${mapZoneFilter === 'rail' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      👗 Рейлы ({financeStats.showroomOccupancy.occupiedRailsFraction}/{financeStats.showroomOccupancy.totalRails})
+                    </button>
+                    <button
+                      onClick={() => setMapZoneFilter('shelf')}
+                      className={`px-3 py-1.5 rounded-xl transition ${mapZoneFilter === 'shelf' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      👟 Полки для обуви ({financeStats.showroomOccupancy.occupiedShelves}/{financeStats.showroomOccupancy.totalShelves})
+                    </button>
+                    <button
+                      onClick={() => setMapZoneFilter('corner')}
+                      className={`px-3 py-1.5 rounded-xl transition ${mapZoneFilter === 'corner' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      ✨ Корнеры ({financeStats.showroomOccupancy.occupiedCorners}/{financeStats.showroomOccupancy.totalCorners})
+                    </button>
+                    <button
+                      onClick={() => setMapZoneFilter('accessory')}
+                      className={`px-3 py-1.5 rounded-xl transition ${mapZoneFilter === 'accessory' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      💍 Стойки ({financeStats.showroomOccupancy.occupiedAccessories}/{financeStats.showroomOccupancy.totalAccessories})
+                    </button>
+                  </div>
+
+                  {/* СЕКЦИЯ: РЕЙЛЫ ДЛЯ ОДЕЖДЫ */}
+                  {(mapZoneFilter === 'all' || mapZoneFilter === 'rail') && (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                            <span>👗 Рейлы для одежды</span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              ({financeStats.showroomOccupancy.occupiedRailsFraction} из {financeStats.showroomOccupancy.totalRails} занято)
+                            </span>
+                          </h4>
+                          <p className="text-[11px] text-slate-400">
+                            Рейл может быть занят брендом целиком (1.0) или разделен пополам (1/2 + 1/2)
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                        {Array.from({ length: showroomConfig.totalRails || 22 }, (_, idx) => {
+                          const railNum = idx + 1;
+                          const info = getPlaceSlotsForRail(railNum, financeStats.activeBrands);
+
+                          // СЛУЧАЙ 1: Рейл занят целиком (1.0) одним брендом
+                          if (info.fullOccupant) {
+                            const b = info.fullOccupant.brand;
+                            const isPaid = b.paidMonth === currentMonthKey;
+                            const overdue = isBrandOverdue(b);
+
+                            return (
+                              <div
+                                key={`rail-${railNum}`}
+                                className={`rounded-xl border p-3 flex flex-col justify-between transition hover:shadow-xs ${
+                                  overdue ? 'bg-rose-50/30 border-rose-300' : isPaid ? 'bg-emerald-50/20 border-emerald-200' : 'bg-slate-50/40 border-slate-200'
+                                }`}
+                              >
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-mono font-bold text-xs text-slate-800">
+                                      Рейл #{railNum}
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-900 text-white">
+                                      Целиком (1/1)
+                                    </span>
+                                  </div>
+
+                                  <div>
+                                    <div className="font-bold text-slate-900 text-sm truncate">{b.name}</div>
+                                    <div className="text-[11px] text-slate-500 truncate">{b.category}</div>
+                                  </div>
+
+                                  <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-200/60">
+                                    <span className="font-bold text-slate-800">
+                                      {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽
+                                    </span>
+                                    {isPaid ? (
+                                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                                        ✅ Оплачено
+                                      </span>
+                                    ) : overdue ? (
+                                      <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold">
+                                        🚨 Просрочено
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-semibold">
+                                        до {b.paymentDay || 1}-го
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-2.5 mt-2 border-t border-slate-200/60 text-[11px]">
+                                  <button
+                                    onClick={() => openBrandModal(b)}
+                                    className="text-slate-600 hover:text-slate-900 font-semibold"
+                                  >
+                                    ✎ Карточка
+                                  </button>
+                                  <button
+                                    onClick={() => handleReleasePlace(b.id, info.fullOccupant.placeStr)}
+                                    className="text-rose-500 hover:text-rose-700 font-medium"
+                                  >
+                                    Освободить
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          // СЛУЧАЙ 2: Рейл разделен на половины (1/2)
+                          if (info.halfOccupants.length > 0) {
+                            const halfA = info.halfOccupants[0];
+                            const halfB = info.halfOccupants[1] || null;
+
+                            return (
+                              <div
+                                key={`rail-${railNum}`}
+                                className="rounded-xl border border-indigo-200 bg-indigo-50/20 p-3 flex flex-col justify-between space-y-2.5 hover:shadow-xs transition"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-mono font-bold text-xs text-indigo-950">
+                                    Рейл #{railNum}
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                    Разделен (1/2)
+                                  </span>
+                                </div>
+
+                                {/* Первая половина 1/2 */}
+                                <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold text-slate-400">1/2 (слот А):</span>
+                                    {halfA.brand.paidMonth === currentMonthKey ? (
+                                      <span className="text-[10px] text-emerald-700 font-bold">✅ Оплачено</span>
+                                    ) : isBrandOverdue(halfA.brand) ? (
+                                      <span className="text-[10px] text-rose-700 font-bold">🚨 Долг</span>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-500 font-semibold">до {halfA.brand.paymentDay || 1}</span>
+                                    )}
+                                  </div>
+                                  <div className="font-bold text-slate-900 text-xs truncate">{halfA.brand.name}</div>
+                                  <div className="flex items-center justify-between text-[11px] text-slate-500">
+                                    <span>{(Number(halfA.brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <button onClick={() => openBrandModal(halfA.brand)} className="text-slate-600 hover:text-slate-900">✎</button>
+                                      <button onClick={() => handleReleasePlace(halfA.brand.id, halfA.placeStr)} className="text-rose-500 hover:text-rose-700">✕</button>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Вторая половина 1/2 */}
+                                {halfB ? (
+                                  <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-bold text-slate-400">1/2 (слот Б):</span>
+                                      {halfB.brand.paidMonth === currentMonthKey ? (
+                                        <span className="text-[10px] text-emerald-700 font-bold">✅ Оплачено</span>
+                                      ) : isBrandOverdue(halfB.brand) ? (
+                                        <span className="text-[10px] text-rose-700 font-bold">🚨 Долг</span>
+                                      ) : (
+                                        <span className="text-[10px] text-slate-500 font-semibold">до {halfB.brand.paymentDay || 1}</span>
+                                      )}
+                                    </div>
+                                    <div className="font-bold text-slate-900 text-xs truncate">{halfB.brand.name}</div>
+                                    <div className="flex items-center justify-between text-[11px] text-slate-500">
+                                      <span>{(Number(halfB.brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</span>
+                                      <div className="flex items-center gap-1.5">
+                                        <button onClick={() => openBrandModal(halfB.brand)} className="text-slate-600 hover:text-slate-900">✎</button>
+                                        <button onClick={() => handleReleasePlace(halfB.brand.id, halfB.placeStr)} className="text-rose-500 hover:text-rose-700">✕</button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setPlaceToAssign({ placeName: `Рейл ${railNum} (1/2)`, isRail: true, defaultSlot: 'half' })}
+                                    className="w-full py-2.5 rounded-lg border-2 border-dashed border-indigo-300 hover:border-indigo-500 hover:bg-white text-indigo-700 text-xs font-bold transition flex items-center justify-center gap-1"
+                                  >
+                                    <span>➕</span>
+                                    <span>Занять вторую 1/2</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // СЛУЧАЙ 3: Рейл полностью свободен
+                          return (
+                            <div
+                              key={`rail-${railNum}`}
+                              className="rounded-xl border-2 border-dashed border-slate-200 p-3.5 flex flex-col justify-between hover:border-slate-400 hover:bg-slate-50/50 transition space-y-3"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="font-mono font-bold text-xs text-slate-500">
+                                  Рейл #{railNum}
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
+                                  Свободен
+                                </span>
+                              </div>
+
+                              <div className="text-center py-2">
+                                <span className="text-2xl opacity-40">👗</span>
+                                <div className="text-[11px] text-slate-400 mt-1">Место свободно</div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-1.5 pt-1">
+                                <button
+                                  onClick={() => setPlaceToAssign({ placeName: `Рейл ${railNum}`, isRail: true, defaultSlot: 'full' })}
+                                  className="py-1.5 px-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold transition"
+                                >
+                                  Целиком
+                                </button>
+                                <button
+                                  onClick={() => setPlaceToAssign({ placeName: `Рейл ${railNum} (1/2)`, isRail: true, defaultSlot: 'half' })}
+                                  className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold border border-slate-200 transition"
+                                >
+                                  1/2 рейла
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* СЕКЦИЯ: ПОЛКИ ДЛЯ ОБУВИ И СУМОК */}
+                  {(mapZoneFilter === 'all' || mapZoneFilter === 'shelf') && (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                            <span>👟 Полки для обуви и сумок</span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              ({financeStats.showroomOccupancy.occupiedShelves} из {financeStats.showroomOccupancy.totalShelves} занято)
+                            </span>
+                          </h4>
+                          <p className="text-[11px] text-slate-400">
+                            Выделенные полки в шоуруме для брендов обуви, сумок и рюкзаков
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+                        {getPlaceSlotsForSingle('Полка', showroomConfig.totalShelves || 10, financeStats.activeBrands).map(shelf => {
+                          if (shelf.isOccupied) {
+                            const b = shelf.occupant;
+                            const isPaid = b.paidMonth === currentMonthKey;
+                            const overdue = isBrandOverdue(b);
+
+                            return (
+                              <div
+                                key={shelf.placeName}
+                                className={`rounded-xl border p-3 flex flex-col justify-between transition hover:shadow-xs ${
+                                  overdue ? 'bg-rose-50/30 border-rose-300' : isPaid ? 'bg-emerald-50/20 border-emerald-200' : 'bg-slate-50/40 border-slate-200'
+                                }`}
+                              >
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-mono font-bold text-xs text-slate-800">
+                                      {shelf.placeName}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 font-semibold">
+                                      👟
+                                    </span>
+                                  </div>
+                                  <div className="font-bold text-slate-900 text-xs truncate">{b.name}</div>
+                                  <div className="text-[11px] text-slate-500 truncate">{b.category}</div>
+                                  <div className="text-xs font-bold text-slate-900">
+                                    {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-200/60 text-[11px]">
+                                  <button onClick={() => openBrandModal(b)} className="text-slate-600 hover:text-slate-900 font-semibold">✎</button>
+                                  <button onClick={() => handleReleasePlace(b.id, shelf.placeStr)} className="text-rose-500 hover:text-rose-700">Освободить</button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={shelf.placeName}
+                              onClick={() => setPlaceToAssign({ placeName: shelf.placeName, isRail: false })}
+                              className="rounded-xl border-2 border-dashed border-slate-200 p-3.5 hover:border-slate-400 hover:bg-slate-50/50 transition text-left flex flex-col justify-between min-h-[110px]"
+                            >
+                              <div className="flex items-center justify-between w-full">
+                                <span className="font-mono font-bold text-xs text-slate-500">{shelf.placeName}</span>
+                                <span className="text-[10px] text-slate-400">Свободно</span>
+                              </div>
+                              <div className="text-center py-1 opacity-40 text-xl">👟</div>
+                              <div className="text-[11px] font-semibold text-sky-700 text-center w-full">
+                                + Заселить обувь/сумки
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* СЕКЦИЯ: КОРНЕРЫ (БРЕНДОВЫЕ ЗОНЫ) */}
+                  {(mapZoneFilter === 'all' || mapZoneFilter === 'corner') && (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                            <span>✨ Корнеры (Брендовые зоны)</span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              ({financeStats.showroomOccupancy.occupiedCorners} из {financeStats.showroomOccupancy.totalCorners} занято)
+                            </span>
+                          </h4>
+                          <p className="text-[11px] text-slate-400">
+                            Крупные выделенные пространства для флагманских резидентов
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {getPlaceSlotsForSingle('Корнер', showroomConfig.totalCorners || 3, financeStats.activeBrands).map(corner => {
+                          if (corner.isOccupied) {
+                            const b = corner.occupant;
+                            const isPaid = b.paidMonth === currentMonthKey;
+                            const overdue = isBrandOverdue(b);
+
+                            return (
+                              <div
+                                key={corner.placeName}
+                                className={`rounded-xl border p-4 flex flex-col justify-between transition hover:shadow-xs ${
+                                  overdue ? 'bg-rose-50/30 border-rose-300' : isPaid ? 'bg-emerald-50/20 border-emerald-200' : 'bg-purple-50/20 border-purple-200'
+                                }`}
+                              >
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-bold text-sm text-purple-950">{corner.placeName}</span>
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">
+                                      Корнер
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <div className="font-bold text-slate-900 text-base">{b.name}</div>
+                                    <div className="text-xs text-slate-500">{b.category}</div>
+                                  </div>
+                                  <div className="text-sm font-bold text-slate-900 pt-1">
+                                    {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ / мес
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-3 mt-3 border-t border-slate-200/60 text-xs">
+                                  <button onClick={() => openBrandModal(b)} className="text-slate-700 hover:text-slate-900 font-semibold">✎ Карточка</button>
+                                  <button onClick={() => handleReleasePlace(b.id, corner.placeStr)} className="text-rose-500 hover:text-rose-700">Освободить</button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={corner.placeName}
+                              onClick={() => setPlaceToAssign({ placeName: corner.placeName, isRail: false })}
+                              className="rounded-xl border-2 border-dashed border-purple-200 p-5 hover:border-purple-400 hover:bg-purple-50/30 transition text-center flex flex-col items-center justify-center min-h-[140px] space-y-1.5"
+                            >
+                              <span className="text-2xl">✨</span>
+                              <div className="font-bold text-slate-800 text-xs">{corner.placeName} свободен</div>
+                              <div className="text-[11px] font-semibold text-purple-700">+ Заселить корнер</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* СЕКЦИЯ: СТОЙКИ И ВИТРИНЫ ДЛЯ АКСЕССУАРОВ */}
+                  {(mapZoneFilter === 'all' || mapZoneFilter === 'accessory') && (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                            <span>💍 Стойки и витрины для аксессуаров</span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              ({financeStats.showroomOccupancy.occupiedAccessories} из {financeStats.showroomOccupancy.totalAccessories} занято)
+                            </span>
+                          </h4>
+                          <p className="text-[11px] text-slate-400">
+                            Компактные стойки для украшений, очков, головных уборов и парфюмерии
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {getPlaceSlotsForSingle('Стойка', showroomConfig.totalAccessories || 6, financeStats.activeBrands).map(acc => {
+                          if (acc.isOccupied) {
+                            const b = acc.occupant;
+                            const isPaid = b.paidMonth === currentMonthKey;
+                            const overdue = isBrandOverdue(b);
+
+                            return (
+                              <div
+                                key={acc.placeName}
+                                className={`rounded-xl border p-3 flex flex-col justify-between transition hover:shadow-xs ${
+                                  overdue ? 'bg-rose-50/30 border-rose-300' : isPaid ? 'bg-emerald-50/20 border-emerald-200' : 'bg-amber-50/20 border-amber-200'
+                                }`}
+                              >
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-mono font-bold text-xs text-amber-950">{acc.placeName}</span>
+                                    <span className="text-xs">💍</span>
+                                  </div>
+                                  <div className="font-bold text-slate-900 text-xs truncate">{b.name}</div>
+                                  <div className="text-[11px] text-slate-500 truncate">{b.category}</div>
+                                  <div className="text-xs font-bold text-slate-900">
+                                    {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-slate-200/60 text-[11px]">
+                                  <button onClick={() => openBrandModal(b)} className="text-slate-600 hover:text-slate-900 font-semibold">✎</button>
+                                  <button onClick={() => handleReleasePlace(b.id, acc.placeStr)} className="text-rose-500 hover:text-rose-700">Освободить</button>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <button
+                              key={acc.placeName}
+                              onClick={() => setPlaceToAssign({ placeName: acc.placeName, isRail: false })}
+                              className="rounded-xl border-2 border-dashed border-amber-200 p-4 hover:border-amber-400 hover:bg-amber-50/30 transition text-center flex flex-col items-center justify-center min-h-[110px]"
+                            >
+                              <span className="text-xl">💍</span>
+                              <div className="font-bold text-slate-700 text-xs mt-1">{acc.placeName} свободна</div>
+                              <div className="text-[11px] font-semibold text-amber-800 mt-0.5">+ Заселить аксессуары</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ПОДВИД 2: ИНТЕРАКТИВНЫЙ КАЛЕНДАРЬ ОПЛАТ */}
+              {financeSubView === 'calendar' && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+                  {(() => {
+                    const calMonthKey = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}`;
+                    const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+                    const firstDayRaw = new Date(calendarYear, calendarMonth, 1).getDay();
+                    const startOffset = firstDayRaw === 0 ? 6 : firstDayRaw - 1;
+                    const now = new Date();
+                    const isCurrentRealMonth = now.getFullYear() === calendarYear && now.getMonth() === calendarMonth;
+                    const todayDateNum = now.getDate();
+
+                    const monthPlannedRev = financeStats.activeBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
+                    const monthPaidBrands = financeStats.activeBrands.filter(b => b.paidMonth === calMonthKey);
+                    const monthPaidRev = monthPaidBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
+                    const monthRemainingRev = Math.max(0, monthPlannedRev - monthPaidRev);
+
+                    const handlePrevMonth = () => {
+                      if (calendarMonth === 0) {
+                        setCalendarYear(y => y - 1);
+                        setCalendarMonth(11);
+                      } else {
+                        setCalendarMonth(m => m - 1);
+                      }
+                    };
+
+                    const handleNextMonth = () => {
+                      if (calendarMonth === 11) {
+                        setCalendarYear(y => y + 1);
+                        setCalendarMonth(0);
+                      } else {
+                        setCalendarMonth(m => m + 1);
+                      }
+                    };
+
+                    const handleTodayMonth = () => {
+                      const cur = new Date();
+                      setCalendarYear(cur.getFullYear());
+                      setCalendarMonth(cur.getMonth());
+                    };
+
+                    return (
+                      <div className="space-y-4">
+                        {/* Шапка календаря: навигация по месяцам и статистика */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={handlePrevMonth}
+                              className="w-8 h-8 rounded-xl border border-slate-200 hover:bg-slate-100 flex items-center justify-center font-bold text-slate-700 transition"
+                              title="Предыдущий месяц"
+                            >
+                              ‹
+                            </button>
+                            <h3 className="font-extrabold text-base text-slate-900 min-w-[150px] text-center">
+                              {MONTH_NAMES_RU[calendarMonth]} {calendarYear}
+                            </h3>
+                            <button
+                              onClick={handleNextMonth}
+                              className="w-8 h-8 rounded-xl border border-slate-200 hover:bg-slate-100 flex items-center justify-center font-bold text-slate-700 transition"
+                              title="Следующий месяц"
+                            >
+                              ›
+                            </button>
+                            {!isCurrentRealMonth && (
+                              <button
+                                onClick={handleTodayMonth}
+                                className="px-2.5 py-1 text-xs font-semibold text-sky-700 bg-sky-50 border border-sky-200 rounded-lg ml-1 hover:bg-sky-100"
+                              >
+                                Сегодня
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            <span className="bg-slate-100 text-slate-700 px-2.5 py-1 rounded-xl font-semibold">
+                              План: <strong>{monthPlannedRev.toLocaleString('ru-RU')} ₽</strong>
+                            </span>
+                            <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-xl font-semibold">
+                              Собрано: <strong>{monthPaidRev.toLocaleString('ru-RU')} ₽</strong>
+                            </span>
+                            {monthRemainingRev > 0 && (
+                              <span className="bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-1 rounded-xl font-semibold">
+                                Осталось: <strong>{monthRemainingRev.toLocaleString('ru-RU')} ₽</strong>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Дни недели (Пн-Вс) */}
+                        <div className="grid grid-cols-7 gap-1 sm:gap-2 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                          {DAYS_OF_WEEK_RU.map(dayName => (
+                            <div key={dayName} className="py-1">
+                              {dayName}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Сетка ячеек календаря */}
+                        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+                          {/* Пустые ячейки смещения */}
+                          {Array.from({ length: startOffset }, (_, o) => (
+                            <div key={`offset-${o}`} className="min-h-[75px] sm:min-h-[95px] rounded-xl bg-slate-50/50 border border-dashed border-slate-100" />
+                          ))}
+
+                          {/* Дни месяца 1..daysInMonth */}
+                          {Array.from({ length: daysInMonth }, (_, dIdx) => {
+                            const d = dIdx + 1;
+                            const isToday = isCurrentRealMonth && todayDateNum === d;
+
+                            const dayBrands = financeStats.activeBrands.filter(b => {
+                              const pDay = Number(b.paymentDay) || 1;
+                              if (pDay === d) return true;
+                              if (d === daysInMonth && pDay > daysInMonth) return true;
+                              return false;
+                            });
+
+                            const dayFee = dayBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
+                            const hasBrands = dayBrands.length > 0;
+
+                            return (
+                              <div
+                                key={`day-${d}`}
+                                onClick={() => {
+                                  setSelectedDayDetails({
+                                    day: d,
+                                    monthKey: calMonthKey,
+                                    monthName: MONTH_NAMES_GENITIVE_RU[calendarMonth],
+                                    year: calendarYear,
+                                    brands: dayBrands,
+                                    totalFee: dayFee
+                                  });
+                                }}
+                                className={`min-h-[75px] sm:min-h-[95px] p-1.5 sm:p-2 rounded-xl border flex flex-col justify-between transition cursor-pointer select-none ${
+                                  isToday
+                                    ? 'bg-sky-50/60 border-sky-400 ring-2 ring-sky-200'
+                                    : hasBrands
+                                    ? 'bg-white border-slate-200 hover:border-slate-400 hover:shadow-xs'
+                                    : 'bg-white/80 border-slate-100 hover:bg-slate-50/60'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span
+                                    className={`text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full ${
+                                      isToday ? 'bg-sky-600 text-white' : 'text-slate-800'
+                                    }`}
+                                  >
+                                    {d}
+                                  </span>
+
+                                  {hasBrands && (
+                                    <span className="text-[10px] font-bold text-slate-700 bg-slate-100 px-1 py-0.2 rounded-md">
+                                      {Math.round(dayFee / 1000)}k ₽
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Чипы брендов на этот день */}
+                                <div className="space-y-1 mt-1 overflow-hidden">
+                                  {dayBrands.slice(0, 2).map(b => {
+                                    const isPaid = b.paidMonth === calMonthKey;
+                                    const status = getBrandPaymentStatus(b, calMonthKey);
+
+                                    return (
+                                      <div
+                                        key={b.id}
+                                        className={`px-1.5 py-0.5 rounded text-[10px] truncate font-semibold border ${
+                                          isPaid
+                                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                            : status === 'overdue'
+                                            ? 'bg-rose-100 text-rose-800 border-rose-300'
+                                            : status === 'due_today'
+                                            ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                            : 'bg-slate-100 text-slate-700 border-slate-200'
+                                        }`}
+                                        title={`${b.name} (${(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽)`}
+                                      >
+                                        {isPaid ? '✓ ' : ''}{b.name}
+                                      </div>
+                                    );
+                                  })}
+
+                                  {dayBrands.length > 2 && (
+                                    <div className="text-[9px] text-slate-400 font-bold text-center">
+                                      +{dayBrands.length - 2} еще
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* ПОДВИД 3: РЕЕСТР ПЛАТЕЖЕЙ (ТАБЛИЦА С МЕСТАМИ) */}
+              {financeSubView === 'table' && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-900">📋 Реестр платежей активных брендов ({currentMonthKey})</h3>
+                      <p className="text-xs text-slate-500">Учет оплаты за текущий месяц с отображением закрепленных мест.</p>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                        <tr>
+                          <th className="p-3">Бренд</th>
+                          <th className="p-3">Место в зале</th>
+                          <th className="p-3">Контакты</th>
+                          <th className="p-3">Аренда</th>
+                          <th className="p-3">День оплаты</th>
+                          <th className="p-3">Статус за {currentMonthKey}</th>
+                          <th className="p-3 text-right">Действие</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {financeStats.activeBrands.map(b => {
+                          const isPaid = b.paidMonth === currentMonthKey;
+                          const overdue = isBrandOverdue(b);
+                          const places = parseAssignedPlaces(b.assignedPlaces);
+
+                          return (
+                            <tr key={b.id} className={overdue ? 'bg-rose-50/50' : ''}>
+                              <td className="p-3 font-bold text-slate-900">
+                                <div>{b.name}</div>
+                                <div className="text-[11px] text-slate-400 font-normal">{b.category}</div>
+                              </td>
+
+                              <td className="p-3">
+                                <div className="flex flex-wrap gap-1">
+                                  {places.length > 0 ? (
+                                    places.map((p, idx) => (
+                                      <span key={idx} className="px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200 text-[10px] font-bold">
+                                        {p}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-slate-400 italic text-[11px]">—</span>
+                                  )}
+                                </div>
+                              </td>
+
+                              <td className="p-3">
+                                {b.tgUsername && (
+                                  <a href={`https://t.me/${b.tgUsername.replace('@','')}`} target="_blank" className="text-sky-600 font-medium mr-2">
+                                    @{b.tgUsername.replace('@','')}
+                                  </a>
+                                )}
+                                {b.phone && (
+                                  <a href={`tel:${b.phone}`} className="text-emerald-700">
+                                    {b.phone}
+                                  </a>
+                                )}
+                              </td>
+
+                              <td className="p-3 font-bold text-slate-900 whitespace-nowrap">
+                                {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽
+                              </td>
+
+                              <td className="p-3 font-semibold whitespace-nowrap">
+                                До {b.paymentDay || 1}-го числа
+                              </td>
+
+                              <td className="p-3 whitespace-nowrap">
+                                {isPaid ? (
+                                  <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[11px]">
+                                    ✅ Оплачено
+                                  </span>
+                                ) : overdue ? (
+                                  <span className="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 font-bold text-[11px]">
+                                    🚨 Просрочено!
+                                  </span>
+                                ) : (
+                                  <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-bold text-[11px]">
+                                    ⏳ Ожидает оплаты
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="p-3 text-right whitespace-nowrap">
+                                <button
+                                  onClick={() => toggleBrandPaidStatus(b.id)}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                                    isPaid ? 'bg-slate-200 text-slate-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                  }`}
+                                >
+                                  {isPaid ? 'Снять отметку' : 'Отметить оплату'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -3003,7 +4110,7 @@
                         </td>
                         <td className="p-3.5">
                           <div className="font-bold">{(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽</div>
-                          <div className="text-[11px] text-slate-500">До {b.paymentDay || 10}-го числа • {b.railFormat}</div>
+                          <div className="text-[11px] text-slate-500">До {b.paymentDay || 1}-го числа • {b.railFormat}</div>
                         </td>
                         <td className="p-3.5">
                           <button
@@ -3014,7 +4121,7 @@
                           </button>
                         </td>
                         <td className="p-3.5 text-right whitespace-nowrap">
-                          <button onClick={() => { setEditingBrand(b); setIsModalOpen(true); }} className="text-slate-500 hover:text-slate-900 mr-2 font-medium">Ред.</button>
+                          <button onClick={() => openBrandModal(b)} className="text-slate-500 hover:text-slate-900 mr-2 font-medium">Ред.</button>
                           <button onClick={() => requestDeleteBrand(b.id)} className="text-rose-500 hover:text-rose-700 font-medium">Удалить</button>
                         </td>
                       </tr>
@@ -3562,7 +4669,7 @@
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">День оплаты (число 1–31)</label>
-                    <input name="paymentDay" type="number" min="1" max="31" defaultValue={editingBrand?.paymentDay ?? 10} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
+                    <input name="paymentDay" type="number" min="1" max="31" defaultValue={editingBrand?.paymentDay ?? 1} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                 </div>
 
@@ -3574,8 +4681,127 @@
                     </select>
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">Формат рейлов</label>
+                    <label className="block font-semibold mb-1">Формат рейлов (описание)</label>
                     <input name="railFormat" defaultValue={editingBrand?.railFormat || '1 рейл'} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
+                  </div>
+                </div>
+
+                {/* ИНТЕРАКТИВНЫЙ ВЫБОР МЕСТ В ШОУРУМЕ */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block font-bold text-slate-800 text-xs">
+                      🏬 Закрепленные места в шоуруме:
+                    </label>
+                    <span className="text-[10px] text-slate-400">
+                      Рейлы (в т.ч. 1/2), Полки, Корнеры, Стойки
+                    </span>
+                  </div>
+
+                  {/* Текущие назначенные места */}
+                  <div className="flex flex-wrap gap-1.5 min-h-[28px] items-center">
+                    {brandPlaces.map((pl, idx) => (
+                      <span key={idx} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-100 text-sky-800 border border-sky-300 font-semibold text-xs animate-in fade-in">
+                        <span>{pl}</span>
+                        <button
+                          type="button"
+                          onClick={() => setBrandPlaces(brandPlaces.filter((_, i) => i !== idx))}
+                          className="hover:bg-sky-200 text-sky-700 rounded-full w-4 h-4 flex items-center justify-center font-bold text-[10px]"
+                          title="Удалить место"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                    {brandPlaces.length === 0 && (
+                      <span className="text-[11px] text-slate-400 italic">
+                        Места пока не назначены
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Выбор из каталога мест */}
+                  <div className="pt-1.5 border-t border-slate-200/80 flex flex-wrap items-center gap-1.5">
+                    <select
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        if (val === '__custom__') {
+                          setIsAddingCustomPlace(true);
+                        } else {
+                          if (!brandPlaces.includes(val)) {
+                            setBrandPlaces([...brandPlaces, val]);
+                          }
+                        }
+                        e.target.value = '';
+                      }}
+                      className="bg-white border border-slate-200 rounded-lg p-1.5 text-[11px] font-semibold text-slate-700 outline-none focus:border-slate-900"
+                    >
+                      <option value="">➕ Добавить место в зале...</option>
+                      <optgroup label="👗 Рейлы целиком (1.0)">
+                        {Array.from({ length: showroomConfig.totalRails || 22 }, (_, i) => {
+                          const name = `Рейл ${i + 1}`;
+                          return <option key={name} value={name}>{name}</option>;
+                        })}
+                      </optgroup>
+                      <optgroup label="👗 Половина рейла (1/2)">
+                        {Array.from({ length: showroomConfig.totalRails || 22 }, (_, i) => {
+                          const name = `Рейл ${i + 1} (1/2)`;
+                          return <option key={name} value={name}>{name}</option>;
+                        })}
+                      </optgroup>
+                      <optgroup label="👟 Полки (обувь/сумки)">
+                        {Array.from({ length: showroomConfig.totalShelves || 10 }, (_, i) => {
+                          const name = `Полка ${i + 1}`;
+                          return <option key={name} value={name}>{name}</option>;
+                        })}
+                      </optgroup>
+                      <optgroup label="✨ Корнеры (зоны)">
+                        {Array.from({ length: showroomConfig.totalCorners || 3 }, (_, i) => {
+                          const name = `Корнер ${i + 1}`;
+                          return <option key={name} value={name}>{name}</option>;
+                        })}
+                      </optgroup>
+                      <optgroup label="💍 Стойки (аксессуары)">
+                        {Array.from({ length: showroomConfig.totalAccessories || 6 }, (_, i) => {
+                          const name = `Стойка ${i + 1}`;
+                          return <option key={name} value={name}>{name}</option>;
+                        })}
+                      </optgroup>
+                      <option value="__custom__">✏️ Ввести другое обозначение...</option>
+                    </select>
+
+                    {isAddingCustomPlace && (
+                      <div className="flex items-center gap-1 w-full mt-1 animate-in fade-in">
+                        <input
+                          type="text"
+                          value={customPlaceInput}
+                          onChange={(e) => setCustomPlaceInput(e.target.value)}
+                          placeholder="Например: Остров 1 или Витрина 2"
+                          className="flex-1 bg-white border border-slate-300 rounded-lg px-2 py-1 text-[11px] outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const trimmed = customPlaceInput.trim();
+                            if (trimmed && !brandPlaces.includes(trimmed)) {
+                              setBrandPlaces([...brandPlaces, trimmed]);
+                            }
+                            setCustomPlaceInput('');
+                            setIsAddingCustomPlace(false);
+                          }}
+                          className="px-2.5 py-1 bg-slate-900 text-white rounded-lg text-[11px] font-semibold"
+                        >
+                          OK
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsAddingCustomPlace(false); setCustomPlaceInput(''); }}
+                          className="px-2 py-1 bg-slate-200 text-slate-700 rounded-lg text-[11px]"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -3623,6 +4849,372 @@
                     <button
                       type="submit"
                       className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold transition"
+                    >
+                      Сохранить
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* МОДАЛЬНОЕ ОКНО ДЕТАЛИЗАЦИИ ДНЯ В КАЛЕНДАРЕ ОПЛАТ */}
+          {selectedDayDetails && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 max-w-lg w-full shadow-2xl text-xs space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      <span>📅 Платежи: {selectedDayDetails.day} {selectedDayDetails.monthName} {selectedDayDetails.year}</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Бренды с графиком оплаты до {selectedDayDetails.day}-го числа
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setSelectedDayDetails(null)}
+                    className="text-slate-400 hover:text-slate-700 text-base font-bold px-1.5"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* KPI дня */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <div className="text-[10px] text-slate-500">План к сбору:</div>
+                    <div className="font-bold text-slate-900 text-sm mt-0.5">
+                      {selectedDayDetails.totalFee.toLocaleString('ru-RU')} ₽
+                    </div>
+                  </div>
+                  <div className="bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-200">
+                    <div className="text-[10px] text-emerald-800">Собрано:</div>
+                    <div className="font-bold text-emerald-800 text-sm mt-0.5">
+                      {selectedDayDetails.brands.filter(b => b.paidMonth === selectedDayDetails.monthKey).reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0).toLocaleString('ru-RU')} ₽
+                    </div>
+                  </div>
+                  <div className="bg-rose-50/60 p-2.5 rounded-xl border border-rose-200">
+                    <div className="text-[10px] text-rose-800">Осталось собрать:</div>
+                    <div className="font-bold text-rose-800 text-sm mt-0.5">
+                      {selectedDayDetails.brands.filter(b => b.paidMonth !== selectedDayDetails.monthKey).reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0).toLocaleString('ru-RU')} ₽
+                    </div>
+                  </div>
+                </div>
+
+                {/* Список брендов */}
+                <div className="space-y-2">
+                  {selectedDayDetails.brands.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                      В этот день оплат не запланировано.<br />
+                      <span className="text-[10px] text-slate-400">Стандартный день оплаты для резидентов — 1-е число.</span>
+                    </div>
+                  ) : (
+                    selectedDayDetails.brands.map(brand => {
+                      const isPaid = brand.paidMonth === selectedDayDetails.monthKey;
+                      const status = getBrandPaymentStatus(brand, selectedDayDetails.monthKey);
+                      const tgText = encodeURIComponent(`Здравствуйте, ${brand.name}! 👋\n\nНапоминаем об оплате аренды места в шоуруме за ${selectedDayDetails.monthName} ${selectedDayDetails.year} в размере ${(Number(brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽ (срок оплаты: до ${brand.paymentDay || 1}-го числа).\n\nПодскажите, пожалуйста, статус перевода? Спасибо! ✨`);
+                      const tgUrl = brand.tgUsername ? `https://t.me/${cleanUsername(brand.tgUsername)}?text=${tgText}` : `https://t.me/share/url?text=${tgText}`;
+
+                      return (
+                        <div key={brand.id} className="p-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/60 transition space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="font-bold text-sm text-slate-900">{brand.name}</div>
+                              <div className="text-[11px] text-slate-500">{brand.category}</div>
+                              {brand.assignedPlaces && (
+                                <div className="text-[11px] text-sky-700 font-semibold mt-0.5">
+                                  📍 {brand.assignedPlaces}
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-right">
+                              <div className="font-bold text-slate-900 text-sm">
+                                {(Number(brand.monthlyFee) || 0).toLocaleString('ru-RU')} ₽
+                              </div>
+                              <div className="mt-1">
+                                {isPaid ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                                    ✅ Оплачено
+                                  </span>
+                                ) : status === 'overdue' ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold border border-rose-200">
+                                    🚨 Просрочено!
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                                    ⏳ Ожидает
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                            <button
+                              onClick={() => handleTogglePaymentForMonth(brand.id, selectedDayDetails.monthKey)}
+                              className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                isPaid
+                                  ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                                  : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-2xs'
+                              }`}
+                            >
+                              {isPaid ? '↩️ Снять оплату' : '✅ Отметить оплату'}
+                            </button>
+
+                            <a
+                              href={tgUrl}
+                              target="_blank"
+                              className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-xs font-bold transition flex items-center gap-1"
+                            >
+                              <span>💬</span>
+                              <span>Написать в TG</span>
+                            </a>
+
+                            <button
+                              onClick={() => { setSelectedDayDetails(null); openBrandModal(brand); }}
+                              className="px-2.5 py-1.5 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg text-xs"
+                              title="Открыть карточку бренда"
+                            >
+                              ✎
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 flex justify-end">
+                  <button
+                    onClick={() => setSelectedDayDetails(null)}
+                    className="px-4 py-2 bg-slate-900 text-white rounded-xl font-semibold text-xs"
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛЬНОЕ ОКНО БЫСТРОГО ЗАСЕЛЕНИЯ НА МЕСТО */}
+          {placeToAssign && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 max-w-sm w-full shadow-2xl text-xs space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
+                    <span>🏬 Заселить на место:</span>
+                    <span className="text-sky-700 font-extrabold">{placeToAssign.placeName}</span>
+                  </h3>
+                  <button
+                    onClick={() => setPlaceToAssign(null)}
+                    className="text-slate-400 hover:text-slate-700 text-base font-bold px-1.5"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Выберите бренд для заселения:
+                    </label>
+                    <select
+                      id="quickAssignBrandSelect"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-semibold text-slate-900 outline-none focus:ring-1 focus:ring-slate-900"
+                    >
+                      <option value="">-- Выберите бренд из списка --</option>
+                      <optgroup label="📋 Подписываем договор">
+                        {brands.filter(b => b.stage === 'contract').map(b => (
+                          <option key={b.id} value={b.id}>{b.name} (аренда {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽)</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="💬 Переговоры / Ответили">
+                        {brands.filter(b => b.stage === 'replied').map(b => (
+                          <option key={b.id} value={b.id}>{b.name} (аренда {(Number(b.monthlyFee) || 0).toLocaleString('ru-RU')} ₽)</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="👗 Текущие резиденты в зале (доп. место)">
+                        {brands.filter(b => b.stage === 'active').map(b => (
+                          <option key={b.id} value={b.id}>{b.name} (уже занимает: {b.assignedPlaces || 'без места'})</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="💡 База / Лиды">
+                        {brands.filter(b => b.stage === 'lead' || b.stage === 'contacted').map(b => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer pt-1 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                    <input
+                      type="checkbox"
+                      id="quickAssignActivateStage"
+                      defaultChecked={true}
+                      className="rounded"
+                    />
+                    <span className="font-semibold text-slate-800 text-[11px]">
+                      Сразу перевести бренд в статус «Выставлены в шоуруме»
+                    </span>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlaceToAssign(null);
+                      openBrandModal(null);
+                    }}
+                    className="text-sky-600 hover:text-sky-800 font-semibold text-xs"
+                  >
+                    + Новый бренд
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPlaceToAssign(null)}
+                      className="px-3.5 py-2 border border-slate-200 rounded-xl font-medium"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const sel = document.getElementById('quickAssignBrandSelect');
+                        const activate = document.getElementById('quickAssignActivateStage')?.checked;
+                        if (!sel || !sel.value) return alert('Пожалуйста, выберите бренд для заселения');
+                        handleQuickAssignPlace(sel.value, placeToAssign.placeName, activate);
+                      }}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold shadow-xs transition"
+                    >
+                      Заселить
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛЬНОЕ ОКНО НАСТРОЕК ВМЕСТИМОСТИ ШОУРУМА */}
+          {isCapacitySettingsOpen && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const fd = new FormData(e.target);
+                  const updated = {
+                    totalRails: Math.max(1, Number(fd.get('totalRails')) || 22),
+                    totalShelves: Math.max(0, Number(fd.get('totalShelves')) || 10),
+                    totalCorners: Math.max(0, Number(fd.get('totalCorners')) || 3),
+                    totalAccessories: Math.max(0, Number(fd.get('totalAccessories')) || 6),
+                    defaultRailFee: Math.max(0, Number(fd.get('defaultRailFee')) || 30000)
+                  };
+                  setShowroomConfig(updated);
+                  setIsCapacitySettingsOpen(false);
+                  addAuditLog('ЗАЛ', `Обновлены параметры шоурума: ${updated.totalRails} рейлов, ${updated.totalShelves} полок, ${updated.totalCorners} корнеров, ${updated.totalAccessories} стоек`);
+                  showToast('Параметры зала сохранены');
+                }}
+                className="bg-white rounded-2xl border border-slate-200 p-5 max-w-sm w-full shadow-2xl text-xs space-y-4 animate-in fade-in zoom-in-95 duration-150"
+              >
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
+                    <span>⚙️ Параметры шоурума</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsCapacitySettingsOpen(false)}
+                    className="text-slate-400 hover:text-slate-700 text-base font-bold px-1.5"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block font-semibold mb-1 text-slate-700">👗 Количество рейлов для одежды (по умолчанию 22):</label>
+                    <input
+                      name="totalRails"
+                      type="number"
+                      min="1"
+                      max="100"
+                      defaultValue={showroomConfig.totalRails || 22}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-bold"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1 text-slate-700">👟 Количество полок для обуви и сумок:</label>
+                    <input
+                      name="totalShelves"
+                      type="number"
+                      min="0"
+                      max="100"
+                      defaultValue={showroomConfig.totalShelves || 10}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1 text-slate-700">✨ Количество брендовых корнеров (зон):</label>
+                    <input
+                      name="totalCorners"
+                      type="number"
+                      min="0"
+                      max="50"
+                      defaultValue={showroomConfig.totalCorners || 3}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1 text-slate-700">💍 Стойки / витрины для аксессуаров:</label>
+                    <input
+                      name="totalAccessories"
+                      type="number"
+                      min="0"
+                      max="50"
+                      defaultValue={showroomConfig.totalAccessories || 6}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1 text-slate-700">💰 Средняя аренда рейла (для расчета потенциала):</label>
+                    <input
+                      name="defaultRailFee"
+                      type="number"
+                      step="1000"
+                      defaultValue={showroomConfig.defaultRailFee || 30000}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 outline-none font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowroomConfig(DEFAULT_SHOWROOM_CONFIG);
+                      setIsCapacitySettingsOpen(false);
+                      showToast('Сброшено на 22 рейла, 10 полок, 3 корнера');
+                    }}
+                    className="text-slate-500 hover:text-slate-800 font-semibold text-xs"
+                  >
+                    Сбросить
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsCapacitySettingsOpen(false)}
+                      className="px-3.5 py-2 border border-slate-200 rounded-xl font-medium"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-semibold shadow-xs transition"
                     >
                       Сохранить
                     </button>
