@@ -5,7 +5,7 @@ Stop Hook for Antigravity.
 Fires when the agent execution loop terminates (all actions/tools completed).
 Sends a short, clean task-finished notification to Telegram:
 - 1-sentence summary (10-20 words)
-- attached .md plan document if user requested /plan
+- attached .md plan document if user requested /plan or a new plan artifact was generated
 """
 
 import sys
@@ -13,6 +13,7 @@ import os
 import json
 import re
 import glob
+import time
 import urllib.request
 import urllib.error
 
@@ -73,6 +74,7 @@ def extract_task_context(transcript_path: str, art_dir: str):
     """
     Extracts the latest user request, whether it contained a plan request,
     the latest assistant response, and any relevant plan file.
+    Supports both direct USER_INPUT and forwarded SYSTEM_MESSAGE from Telegram.
     """
     if not transcript_path or not os.path.exists(transcript_path):
         return "", "", False, None, -1
@@ -98,6 +100,13 @@ def extract_task_context(transcript_path: str, art_dir: str):
                         m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", content, re.DOTALL)
                         last_user_text = m.group(1).strip() if m else content.strip()
                         last_user_step = obj.get("step_index", -1)
+                    elif etype == "SYSTEM_MESSAGE":
+                        content = obj.get("content", "")
+                        # Messages forwarded from Telegram Bot / agentapi send-message
+                        m = re.search(r"\[Message\].*?content=(.*?)(?:</SYSTEM_MESSAGE>|\Z)", content, re.DOTALL)
+                        if m:
+                            last_user_text = m.group(1).strip()
+                            last_user_step = obj.get("step_index", -1)
                     elif etype == "PLANNER_RESPONSE":
                         content = obj.get("content", "")
                         if content and not obj.get("tool_calls"):
@@ -107,15 +116,21 @@ def extract_task_context(transcript_path: str, art_dir: str):
     except Exception as e:
         log_debug(f"[extract_task_context error] {e}")
 
-    # Check if user requested a plan (e.g. /plan, plan, составь план, план действий)
-    has_plan_request = bool(re.search(r"(?i)/plan|\bplan\b|составь план|напиши план|разработай план|план реализации|план работ", last_user_text))
+    # Check if user requested a plan (e.g. /plan, "plan", составь план, план действий)
+    plan_pattern = r'(?i)/plan|[\"\']?plan[\"\']?|\bплан\w*'
+    has_plan_request = bool(re.search(plan_pattern, last_user_text))
 
     plan_path = None
-    if has_plan_request and art_dir and os.path.isdir(art_dir):
+    if art_dir and os.path.isdir(art_dir):
         plans = glob.glob(os.path.join(art_dir, "*plan*.md"))
         if plans:
             plans.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-            plan_path = plans[0]
+            newest_plan = plans[0]
+            # Attach if user explicitly mentioned plan OR if a plan was touched/created within the last hour
+            time_since_plan = time.time() - os.path.getmtime(newest_plan)
+            if has_plan_request or (time_since_plan < 3600):
+                plan_path = newest_plan
+                has_plan_request = True
 
     return last_user_text, last_assistant_text, has_plan_request, plan_path, last_user_step
 
