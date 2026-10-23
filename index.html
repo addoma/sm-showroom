@@ -17,6 +17,9 @@
   
   <!-- Babel для компиляции JSX прямо в браузере -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- SheetJS для парсинга и экспорта Excel накладных -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
     :root {
@@ -189,9 +192,11 @@
     const DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbwYm-6qa5RAK-8RqUI7rG69VXpotBxJviiXLSycr4bA46bvRovVYYqzrsxB-6jvhDNY/exec'; // URL развернутого скрипта Google Apps Script (https://script.google.com/macros/s/.../exec)
 
     const ROLES = {
-      owner: { id: 'owner', title: 'Владелец', badge: 'bg-amber-500 text-slate-950 font-black border-amber-400' },
-      admin: { id: 'admin', title: 'Админ', badge: 'bg-purple-100 text-purple-800 font-bold border-purple-200' },
-      user: { id: 'user', title: 'Пользователь', badge: 'bg-sky-100 text-sky-800 font-semibold border-sky-200' }
+      owner: { id: 'owner', title: 'Владелец', badge: 'bg-amber-500 text-slate-950 font-black border-amber-400', description: 'Полный доступ ко всей CRM, финансам, аналитике и системным настройкам' },
+      admin: { id: 'admin', title: 'Админ', badge: 'bg-purple-100 text-purple-800 font-bold border-purple-200', description: 'Управление брендами, рейлами, кассой, складом и правами доступа' },
+      seller: { id: 'seller', title: 'Продавец', badge: 'bg-emerald-100 text-emerald-800 font-semibold border-emerald-200', description: 'Касса, продажи, учет остатков в зале, перемещения и приемка поставок' },
+      brand: { id: 'brand', title: 'Бренд', badge: 'bg-indigo-100 text-indigo-800 font-semibold border-indigo-200', description: 'Личный кабинет бренда: остатки на рейле, история продаж и оформление поставок' },
+      user: { id: 'seller', title: 'Продавец', badge: 'bg-emerald-100 text-emerald-800 font-semibold border-emerald-200', description: 'Касса, продажи, учет остатков в зале, перемещения и приемка поставок' }
     };
 
     const DEFAULT_SHOWROOM_CONFIG = {
@@ -587,7 +592,8 @@
         username,
         phone,
         name: name || (username ? `@${username}` : (tgUserId ? `ID: ${tgUserId}` : phone)),
-        role,
+        role: role === 'user' ? 'seller' : role,
+        brandId: u.brandId || '',
         immutable,
         tgUserId,
         addedAt: addedAt || u.addedAt || '2026-10-22 00:00:00'
@@ -827,11 +833,57 @@
         });
       },
 
-      async getAllData(url, apiKey) {
+      async getAllData(url, apiKey, brandId = '') {
         if (!url) return null;
         return await this.callApi(url, {
           action: 'getAllData',
-          apiKey: apiKey || ''
+          apiKey: apiKey || '',
+          brandId: brandId || ''
+        });
+      },
+
+      async checkVersion(url, apiKey) {
+        if (!url) return null;
+        try {
+          const u = new URL(url);
+          u.searchParams.set('action', 'checkVersion');
+          if (apiKey) u.searchParams.set('apiKey', apiKey);
+          const res = await fetch(u.toString());
+          return await res.json();
+        } catch (e) {
+          return null;
+        }
+      },
+
+      async recordOperation(url, apiKey, operationData) {
+        return await this.callApi(url, {
+          action: 'recordOperation',
+          apiKey: apiKey || '',
+          ...operationData
+        });
+      },
+
+      async importShipment(url, apiKey, shipmentData) {
+        return await this.callApi(url, {
+          action: 'importShipment',
+          apiKey: apiKey || '',
+          ...shipmentData
+        });
+      },
+
+      async syncNomenclature(url, apiKey, items) {
+        return await this.callApi(url, {
+          action: 'syncNomenclature',
+          apiKey: apiKey || '',
+          items
+        });
+      },
+
+      async syncStock(url, apiKey, items) {
+        return await this.callApi(url, {
+          action: 'syncStock',
+          apiKey: apiKey || '',
+          items
         });
       },
 
@@ -1162,6 +1214,73 @@
         localStorage.setItem('sm_crm_showroom_config_v1', JSON.stringify(showroomConfig));
       }, [showroomConfig]);
 
+      // Складской учет: Номенклатура, Остатки и Неизменяемый журнал операций
+      const [nomenclature, setNomenclature] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_nomenclature_v1');
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      const [stock, setStock] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_stock_v1');
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      const [stockOperations, setStockOperations] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_operations_v1');
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      const [systemVersionHash, setSystemVersionHash] = useState('');
+
+      useEffect(() => {
+        try { localStorage.setItem('sm_crm_nomenclature_v1', JSON.stringify(nomenclature)); } catch (e) {}
+      }, [nomenclature]);
+
+      useEffect(() => {
+        try { localStorage.setItem('sm_crm_stock_v1', JSON.stringify(stock)); } catch (e) {}
+      }, [stock]);
+
+      useEffect(() => {
+        try { localStorage.setItem('sm_crm_operations_v1', JSON.stringify(stockOperations.slice(0, 300))); } catch (e) {}
+      }, [stockOperations]);
+
+      // Фильтры и состояния вкладки Склад & Касса
+      const [inventorySubTab, setInventorySubTab] = useState('stock'); // 'stock' | 'pos' | 'shipments' | 'operations'
+      const [inventorySearchQuery, setInventorySearchQuery] = useState('');
+      const [inventoryBrandFilter, setInventoryBrandFilter] = useState('all');
+      const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all');
+      const [inventoryPlaceFilter, setInventoryPlaceFilter] = useState('all');
+      const [inventoryStatusFilter, setInventoryStatusFilter] = useState('all');
+
+      // Модалка быстрой кассовой операции
+      const [isPosModalOpen, setIsPosModalOpen] = useState(false);
+      const [posActionType, setPosActionType] = useState('Продажа');
+      const [posSelectedItem, setPosSelectedItem] = useState(null);
+      const [posQty, setPosQty] = useState(1);
+      const [posPrice, setPosPrice] = useState(0);
+      const [posPlace, setPosPlace] = useState('Рейл 1');
+      const [posTargetPlace, setPosTargetPlace] = useState('Склад');
+      const [posPaymentType, setPosPaymentType] = useState('Терминал / Карта');
+      const [posReceiptId, setPosReceiptId] = useState('');
+      const [posNotes, setPosNotes] = useState('');
+      const [isSubmittingPos, setIsSubmittingPos] = useState(false);
+
+      // Модалка приемки поставок (Excel)
+      const [isShipmentModalOpen, setIsShipmentModalOpen] = useState(false);
+      const [shipmentBrandId, setShipmentBrandId] = useState('');
+      const [shipmentPlace, setShipmentPlace] = useState('Рейл 1');
+      const [shipmentNotes, setShipmentNotes] = useState('');
+      const [parsedShipmentItems, setParsedShipmentItems] = useState([]);
+      const [isSubmittingShipment, setIsSubmittingShipment] = useState(false);
+
+      // Модалка CommerceML / Tilda
+      const [isCommerceMLModalOpen, setIsCommerceMLModalOpen] = useState(false);
+
+      // Подвкладки кабинета бренда
+      const [brandPortalTab, setBrandPortalTab] = useState('stock'); // 'stock' | 'nomenclature' | 'shipments' | 'sales'
+      const [previewBrandId, setPreviewBrandId] = useState(null);
+      const [newAclBrandId, setNewAclBrandId] = useState('');
+
       // Подвкладки в разделе «Финансы & Зал»: 'map' (План зала) | 'analytics' (Финансы & BI) | 'merchandising' (Мерчандайзинг) | 'calendar' (Календарь оплат) | 'table' (Реестр)
       const [financeSubView, setFinanceSubView] = useState('map');
       // Фильтр зон на плане зала: 'all' | 'rail' | 'shelf' | 'corner' | 'accessory'
@@ -1243,12 +1362,20 @@
       const auditLogsRef = useRef(auditLogs);
       const gasUrlRef = useRef(gasUrl);
       const gasApiKeyRef = useRef(gasApiKey);
+      const stockRef = useRef(stock);
+      const nomenclatureRef = useRef(nomenclature);
+      const stockOperationsRef = useRef(stockOperations);
+      const systemVersionHashRef = useRef(systemVersionHash);
 
       useEffect(() => { brandsRef.current = brands; }, [brands]);
       useEffect(() => { aclUsersRef.current = aclUsers; }, [aclUsers]);
       useEffect(() => { auditLogsRef.current = auditLogs; }, [auditLogs]);
       useEffect(() => { gasUrlRef.current = gasUrl; }, [gasUrl]);
       useEffect(() => { gasApiKeyRef.current = gasApiKey; }, [gasApiKey]);
+      useEffect(() => { stockRef.current = stock; }, [stock]);
+      useEffect(() => { nomenclatureRef.current = nomenclature; }, [nomenclature]);
+      useEffect(() => { stockOperationsRef.current = stockOperations; }, [stockOperations]);
+      useEffect(() => { systemVersionHashRef.current = systemVersionHash; }, [systemVersionHash]);
 
       // Локальная персистенция
       useEffect(() => { localStorage.setItem('sm_crm_acl_users_v1', JSON.stringify(aclUsers)); }, [aclUsers]);
@@ -1642,6 +1769,18 @@
           setSelectedDayDetails(null);
           return;
         }
+        if (isCommerceMLModalOpen) {
+          setIsCommerceMLModalOpen(false);
+          return;
+        }
+        if (isShipmentModalOpen) {
+          setIsShipmentModalOpen(false);
+          return;
+        }
+        if (isPosModalOpen) {
+          setIsPosModalOpen(false);
+          return;
+        }
         if (isBackupModalOpen) {
           setIsBackupModalOpen(false);
           return;
@@ -1675,6 +1814,9 @@
         isCapacitySettingsOpen,
         placeToAssign,
         selectedDayDetails,
+        isPosModalOpen,
+        isShipmentModalOpen,
+        isCommerceMLModalOpen,
         isBackupModalOpen,
         isMigrationModalOpen,
         isModalOpen,
@@ -1690,6 +1832,9 @@
 
         const hasOpenModal = Boolean(
           isModalOpen ||
+          isPosModalOpen ||
+          isShipmentModalOpen ||
+          isCommerceMLModalOpen ||
           selectedDayDetails ||
           placeToAssign ||
           isCapacitySettingsOpen ||
@@ -1739,6 +1884,9 @@
 
         const isFormOrModalOpen = Boolean(
           isModalOpen ||
+          isPosModalOpen ||
+          isShipmentModalOpen ||
+          isCommerceMLModalOpen ||
           placeToAssign ||
           isCapacitySettingsOpen ||
           brandToDelete ||
@@ -1826,6 +1974,19 @@
               localStorage.setItem('sm_crm_audit_logs_v1', JSON.stringify(cloudLogs.slice(0, 200)));
             }
 
+            if (Array.isArray(res.nomenclature)) {
+              setNomenclature(res.nomenclature);
+            }
+            if (Array.isArray(res.stock)) {
+              setStock(res.stock);
+            }
+            if (Array.isArray(res.stockOperations)) {
+              setStockOperations(res.stockOperations);
+            }
+            if (res.versionHash) {
+              setSystemVersionHash(res.versionHash);
+            }
+
             setCloudStatus('synced');
           } catch (e) {
             if (isCancelled) return;
@@ -1837,6 +1998,28 @@
         initialLoadFromCloud();
         return () => { isCancelled = true; };
       }, [authState.status, gasUrl, gasApiKey]);
+
+      // 45-секундный фоновый опрос версии состояния Google Таблицы
+      useEffect(() => {
+        if (authState.status !== 'authorized' || !gasUrl) return;
+        const interval = setInterval(async () => {
+          try {
+            const vRes = await CloudStorageService.checkVersion(gasUrlRef.current, gasApiKeyRef.current);
+            if (vRes && vRes.success && vRes.versionHash && vRes.versionHash !== systemVersionHashRef.current) {
+              systemVersionHashRef.current = vRes.versionHash;
+              const allRes = await CloudStorageService.getAllData(gasUrlRef.current, gasApiKeyRef.current, authState.brandId || '');
+              if (allRes && allRes.success) {
+                if (Array.isArray(allRes.brands)) setBrands(allRes.brands);
+                if (Array.isArray(allRes.nomenclature)) setNomenclature(allRes.nomenclature);
+                if (Array.isArray(allRes.stock)) setStock(allRes.stock);
+                if (Array.isArray(allRes.stockOperations)) setStockOperations(allRes.stockOperations);
+                setCloudStatus('synced');
+              }
+            }
+          } catch (err) {}
+        }, 45000);
+        return () => clearInterval(interval);
+      }, [authState.status, authState.brandId, gasUrl]);
 
       // --- ГЕНЕРАЦИЯ ОБЪЕКТА РЕЗЕРВНОЙ КОПИИ ---
       const generateBackupData = () => {
@@ -2128,7 +2311,12 @@
           return;
         }
 
-        const targetRole = authState.role === 'owner' ? newAclRole : 'user';
+        const targetRole = authState.role === 'owner' ? newAclRole : 'seller';
+
+        if (targetRole === 'brand' && !newAclBrandId) {
+          showToast('Пожалуйста, выберите бренд для закрепления за пользователем');
+          return;
+        }
 
         const exists = aclUsers.some(u =>
           (cleanTg && cleanTgId(u.tgUserId) === cleanTg) ||
@@ -2147,6 +2335,7 @@
           phone: newAclPhone.trim(),
           name: newAclName.trim() || (cleanU ? `@${cleanU}` : (cleanTg ? `ID: ${cleanTg}` : newAclPhone.trim())),
           role: targetRole,
+          brandId: targetRole === 'brand' ? newAclBrandId : '',
           immutable: false,
           addedAt: new Date().toLocaleString('ru-RU')
         };
@@ -2155,14 +2344,15 @@
         queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, newUserObj, 'create'));
         addAuditLog(
           'РОЛИ И ДОСТУП',
-          `Добавлен участник ${newUserObj.name} (${cleanTg ? 'ID: ' + cleanTg + ' ' : ''}${cleanU ? '@' + cleanU + ' ' : ''}${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»`
+          `Добавлен участник ${newUserObj.name} (${cleanTg ? 'ID: ' + cleanTg + ' ' : ''}${cleanU ? '@' + cleanU + ' ' : ''}${newUserObj.phone || ''}) с ролью «${ROLES[targetRole]?.title}»${newUserObj.brandId ? ' (Бренд: ' + (brands.find(b => b.id === newUserObj.brandId)?.name || newUserObj.brandId) + ')' : ''}`
         );
 
         setNewAclTgId('');
         setNewAclUsername('');
         setNewAclPhone('');
         setNewAclName('');
-        setNewAclRole('user');
+        setNewAclRole('seller');
+        setNewAclBrandId('');
         showToast(`Добавлен ${ROLES[targetRole]?.title}: ${newUserObj.name}`);
       };
 
@@ -2180,6 +2370,9 @@
         if (nextRole === 'owner') return;
 
         const updatedUser = { ...target, role: nextRole };
+        if (nextRole !== 'brand') {
+          updatedUser.brandId = '';
+        }
         setAclUsers(prev => prev.map(u => u.id === targetUserId ? updatedUser : u));
         queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, updatedUser, 'update'));
         addAuditLog(
@@ -2187,6 +2380,20 @@
           `Изменена роль участника ${target.name} (@${target.username || '—'}): «${ROLES[target.role]?.title}» → «${ROLES[nextRole]?.title}»`
         );
         showToast(`Роль ${target.name} изменена на «${ROLES[nextRole]?.title}»`);
+      };
+
+      const handleChangeUserBrand = (targetUserId, nextBrandId) => {
+        if (authState.role !== 'owner' && authState.role !== 'admin') return;
+        const target = aclUsers.find(u => u.id === targetUserId);
+        if (!target) return;
+        const updatedUser = { ...target, brandId: nextBrandId };
+        setAclUsers(prev => prev.map(u => u.id === targetUserId ? updatedUser : u));
+        queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, updatedUser, 'update'));
+        addAuditLog(
+          'РОЛИ И ДОСТУП',
+          `Для участника ${target.name} назначен бренд: «${brands.find(b => b.id === nextBrandId)?.name || nextBrandId}»`
+        );
+        showToast('Бренд пользователя обновлен');
       };
 
       const handleRemoveAclUser = (targetUserId) => {
@@ -2764,6 +2971,443 @@
         showToast(`Поставка для «${brand.name}» зафиксирована`);
       };
 
+      // --- ОБРАБОТЧИКИ СКЛАДА, КАССЫ (POS) И НАКЛАДНЫХ EXCEL ---
+      const handleScanBarcode = () => {
+        haptic.medium();
+        const code = prompt('📷 Сканирование штрихкода:\nВведите штрихкод или артикул товара:');
+        if (!code || !code.trim()) return;
+        const clean = code.trim().toLowerCase();
+        const foundStock = stock.find(s =>
+          (s.barcode && s.barcode.toLowerCase() === clean) ||
+          (s.sku && s.sku.toLowerCase() === clean)
+        );
+        if (foundStock) {
+          handleOpenPosModal(foundStock, 'Продажа');
+          return;
+        }
+        const foundNom = nomenclature.find(n =>
+          (n.barcode && n.barcode.toLowerCase() === clean) ||
+          (n.sku && n.sku.toLowerCase() === clean)
+        );
+        if (foundNom) {
+          const pseudoStock = {
+            sku: foundNom.sku,
+            barcode: foundNom.barcode,
+            brandId: foundNom.brandId,
+            brandName: foundNom.brandName,
+            place: 'Рейл 1',
+            quantity: 1,
+            available: 1,
+            price: foundNom.price
+          };
+          handleOpenPosModal(pseudoStock, 'Продажа');
+          return;
+        }
+        showToast('Товар со штрихкодом «' + code + '» не найден в базе');
+      };
+
+      const handleOpenPosModal = (item = null, defaultType = 'Продажа') => {
+        haptic.medium();
+        setPosActionType(defaultType);
+        setPosSelectedItem(item);
+        setPosQty(1);
+        if (item) {
+          const nom = nomenclature.find(n => n.sku === item.sku);
+          setPosPrice(Number(nom?.price) || Number(item.price) || 0);
+          setPosPlace(item.place || 'Рейл 1');
+        } else if (stock.length > 0) {
+          const first = stock[0];
+          setPosSelectedItem(first);
+          const nom = nomenclature.find(n => n.sku === first.sku);
+          setPosPrice(Number(nom?.price) || Number(first.price) || 0);
+          setPosPlace(first.place || 'Рейл 1');
+        } else {
+          setPosPrice(0);
+          setPosPlace('Рейл 1');
+        }
+        setPosReceiptId('ЧЕК-' + Math.floor(100000 + Math.random() * 900000));
+        setPosNotes('');
+        setIsPosModalOpen(true);
+      };
+
+      const handleExecutePosOperation = async ({ type, item, qty, price, place, targetPlace, paymentType, notes }) => {
+        if (!item || !item.sku) {
+          showToast('Товар не выбран');
+          return;
+        }
+        setIsSubmittingPos(true);
+        try {
+          const author = authState.tgUser?.username || authState.tgUser?.first_name || OWNER_USERNAME;
+          const authorTg = authState.tgUser?.id ? String(authState.tgUser.id) : '';
+          const receipt = posReceiptId || ('ЧЕК-' + Math.floor(100000 + Math.random() * 900000));
+          const effectivePrice = Number(price) || Number(item.price) || 0;
+          const effectiveQty = Number(qty) || 1;
+          const total = effectiveQty * effectivePrice;
+
+          const opPayload = {
+            type,
+            sku: item.sku,
+            barcode: item.barcode || '',
+            productName: item.name || nomenclature.find(n => n.sku === item.sku)?.name || item.sku,
+            brandId: item.brandId || '',
+            brandName: item.brandName || brands.find(b => b.id === item.brandId)?.name || '',
+            quantity: effectiveQty,
+            price: effectivePrice,
+            totalAmount: total,
+            place: place || item.place || 'Рейл 1',
+            targetPlace: targetPlace || '',
+            authorName: author,
+            authorTgId: authorTg,
+            receiptId: receipt,
+            paymentType: paymentType || 'Карта / Терминал',
+            notes: notes || ''
+          };
+
+          const newOp = {
+            id: 'op-' + Date.now(),
+            timestamp: new Date().toLocaleString('ru-RU'),
+            ...opPayload
+          };
+
+          setStockOperations(prev => [newOp, ...prev]);
+
+          setStock(prev => {
+            const list = [...prev];
+            const idx = list.findIndex(s => s.sku === item.sku && s.place === (place || item.place));
+            if (type === 'Продажа' || type === 'Списание') {
+              if (idx >= 0) {
+                const currentQty = Number(list[idx].quantity) || 0;
+                const newQty = Math.max(0, currentQty - effectiveQty);
+                list[idx] = { ...list[idx], quantity: newQty, available: newQty, updatedAt: getTodayDateString() };
+              }
+            } else if (type === 'Возврат') {
+              if (idx >= 0) {
+                const currentQty = Number(list[idx].quantity) || 0;
+                list[idx] = { ...list[idx], quantity: currentQty + effectiveQty, available: currentQty + effectiveQty, updatedAt: getTodayDateString() };
+              } else {
+                list.push({
+                  sku: item.sku,
+                  barcode: item.barcode || '',
+                  brandId: item.brandId,
+                  brandName: item.brandName,
+                  place: place || 'Рейл 1',
+                  quantity: effectiveQty,
+                  reserved: 0,
+                  available: effectiveQty,
+                  price: effectivePrice,
+                  updatedAt: getTodayDateString()
+                });
+              }
+            } else if (type === 'Перемещение' && targetPlace) {
+              if (idx >= 0) {
+                const currentQty = Number(list[idx].quantity) || 0;
+                list[idx] = { ...list[idx], quantity: Math.max(0, currentQty - effectiveQty), available: Math.max(0, currentQty - effectiveQty), updatedAt: getTodayDateString() };
+              }
+              const targetIdx = list.findIndex(s => s.sku === item.sku && s.place === targetPlace);
+              if (targetIdx >= 0) {
+                const curTarget = Number(list[targetIdx].quantity) || 0;
+                list[targetIdx] = { ...list[targetIdx], quantity: curTarget + effectiveQty, available: curTarget + effectiveQty, updatedAt: getTodayDateString() };
+              } else {
+                list.push({
+                  sku: item.sku,
+                  barcode: item.barcode || '',
+                  brandId: item.brandId,
+                  brandName: item.brandName,
+                  place: targetPlace,
+                  quantity: effectiveQty,
+                  reserved: 0,
+                  available: effectiveQty,
+                  price: effectivePrice,
+                  updatedAt: getTodayDateString()
+                });
+              }
+            }
+            return list;
+          });
+
+          if (item.brandId) {
+            setBrands(prev => prev.map(b => {
+              if (b.id === item.brandId) {
+                const delta = (type === 'Продажа' || type === 'Списание') ? -effectiveQty : (type === 'Возврат' ? effectiveQty : 0);
+                const current = Number(b.currentStockCount) || 0;
+                return { ...b, currentStockCount: Math.max(0, current + delta) };
+              }
+              return b;
+            }));
+          }
+
+          haptic.notification('success');
+          showToast(`✅ Операция проведена: ${type} ${effectiveQty} шт. на ${total.toLocaleString('ru-RU')} ₽`);
+          setIsPosModalOpen(false);
+
+          if (gasUrl) {
+            queueCloudSync(() => CloudStorageService.recordOperation(gasUrlRef.current, gasApiKeyRef.current, opPayload));
+          }
+          addAuditLog('КАССА', `${type}: ${item.sku} (${effectiveQty} шт. на сумму ${total} ₽) • Чек ${receipt}`);
+        } catch (err) {
+          showToast('Ошибка при проведении: ' + err.message);
+        } finally {
+          setIsSubmittingPos(false);
+        }
+      };
+
+      const handleExcelFileSelect = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            const data = evt.target.result;
+            if (!window.XLSX) {
+              showToast('Библиотека Excel не загрузилась. Проверьте интернет-соединение.');
+              return;
+            }
+            const workbook = window.XLSX.read(data, { type: 'binary' });
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const rawRows = window.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            if (rawRows.length < 2) {
+              showToast('Файл Excel пустой или содержит только заголовок');
+              return;
+            }
+
+            const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase());
+            const colMap = {
+              sku: headers.findIndex(h => h.includes('артикул') || h.includes('sku') || h.includes('код')),
+              name: headers.findIndex(h => h.includes('наименование') || h.includes('название') || h.includes('товар')),
+              category: headers.findIndex(h => h.includes('категор')),
+              color: headers.findIndex(h => h.includes('цвет')),
+              size: headers.findIndex(h => h.includes('размер')),
+              quantity: headers.findIndex(h => h.includes('кол') || h.includes('qty') || h.includes('остат')),
+              price: headers.findIndex(h => h.includes('цена') || h.includes('розниц') || h.includes('price')),
+              costPrice: headers.findIndex(h => h.includes('себестоим') || h.includes('закуп')),
+              barcode: headers.findIndex(h => h.includes('штрихкод') || h.includes('barcode') || h.includes('штрих'))
+            };
+
+            const items = [];
+            for (let i = 1; i < rawRows.length; i++) {
+              const row = rawRows[i];
+              if (!row || row.length === 0) continue;
+              const sku = String(colMap.sku >= 0 ? row[colMap.sku] : (row[0] || '')).trim();
+              const name = String(colMap.name >= 0 ? row[colMap.name] : (row[1] || '')).trim();
+              if (!sku && !name) continue;
+
+              items.push({
+                sku: sku || ('SKU-' + (i + 100)),
+                name: name || sku,
+                category: String(colMap.category >= 0 ? row[colMap.category] : 'Одежда').trim(),
+                color: String(colMap.color >= 0 ? row[colMap.color] : '').trim(),
+                size: String(colMap.size >= 0 ? row[colMap.size] : '').trim(),
+                quantity: Math.max(1, parseInt(colMap.quantity >= 0 ? row[colMap.quantity] : row[5]) || 1),
+                price: Number(colMap.price >= 0 ? row[colMap.price] : row[6]) || 0,
+                costPrice: Number(colMap.costPrice >= 0 ? row[colMap.costPrice] : 0) || 0,
+                barcode: String(colMap.barcode >= 0 ? row[colMap.barcode] : '').trim()
+              });
+            }
+
+            if (items.length === 0) {
+              showToast('Не удалось распознать строки товаров в таблице');
+              return;
+            }
+
+            setParsedShipmentItems(items);
+            showToast(`Успешно распознано: ${items.length} позиций товаров!`);
+          } catch (err) {
+            showToast('Ошибка при чтении Excel: ' + err.message);
+          }
+        };
+        reader.readAsBinaryString(file);
+      };
+
+      const handleDownloadExcelTemplate = () => {
+        haptic.light();
+        if (!window.XLSX) {
+          showToast('Библиотека XLSX еще загружается...');
+          return;
+        }
+        const wsData = [
+          ['Артикул', 'Наименование', 'Категория', 'Цвет', 'Размер', 'Количество', 'Розничная цена', 'Штрихкод'],
+          ['T-001', 'Футболка Oversize Heavyweight', 'Одежда', 'Черный', 'L', 10, 3900, '4607001001001'],
+          ['H-002', 'Худи с принтом Dark Future', 'Одежда', 'Серый', 'M', 5, 8500, '4607001001002'],
+          ['C-003', 'Кепка с вышивкой Logo', 'Аксессуары', 'Бежевый', 'ONE', 8, 2800, '4607001001003']
+        ];
+        const ws = window.XLSX.utils.aoa_to_sheet(wsData);
+        const wb = window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb, ws, 'Накладная поставки');
+        window.XLSX.writeFile(wb, 'Шаблон_Поставки_Showroom.xlsx');
+        showToast('📥 Шаблон накладной скачан!');
+      };
+
+      const handleExportStockToExcel = (targetBrandId = null) => {
+        haptic.light();
+        if (!window.XLSX) {
+          showToast('Библиотека XLSX недоступна');
+          return;
+        }
+        const sourceList = targetBrandId ? stock.filter(s => s.brandId === targetBrandId) : stock;
+        const rows = [
+          ['Артикул', 'Штрихкод', 'Наименование', 'Бренд', 'Категория', 'Цвет', 'Размер', 'Локация в зале', 'Остаток в зале', 'Розничная цена']
+        ];
+        sourceList.forEach(s => {
+          const nom = nomenclature.find(n => n.sku === s.sku) || {};
+          rows.push([
+            s.sku || '',
+            s.barcode || nom.barcode || '',
+            nom.name || s.name || '',
+            s.brandName || nom.brandName || '',
+            nom.category || '',
+            nom.color || '',
+            nom.size || '',
+            s.place || 'Рейл 1',
+            Number(s.available) || Number(s.quantity) || 0,
+            Number(nom.price) || Number(s.price) || 0
+          ]);
+        });
+        const ws = window.XLSX.utils.aoa_to_sheet(rows);
+        const wb = window.XLSX.utils.book_new();
+        window.XLSX.utils.book_append_sheet(wb, ws, 'Остатки');
+        const filename = `Остатки_Шоурум_${targetBrandId ? 'Бренд_' : 'Все_'}${getTodayDateString()}.xlsx`;
+        window.XLSX.writeFile(wb, filename);
+        showToast('📊 Файл остатков Excel выгружен!');
+      };
+
+      const handleSubmitShipment = async () => {
+        const effectiveBrandId = shipmentBrandId || (authState.role === 'brand' ? authState.brandId : (brands.length === 1 ? brands[0].id : ''));
+        if (!effectiveBrandId) {
+          showToast('Пожалуйста, выберите бренд для поставки');
+          return;
+        }
+        if (parsedShipmentItems.length === 0) {
+          showToast('Нет позиций для оприходования');
+          return;
+        }
+        const brandObj = brands.find(b => b.id === effectiveBrandId);
+        const effectivePlace = shipmentPlace || brandObj?.railType || 'Рейл 1';
+        setIsSubmittingShipment(true);
+        try {
+          const author = authState.tgUser?.username || authState.tgUser?.first_name || OWNER_USERNAME;
+          const authorTg = authState.tgUser?.id ? String(authState.tgUser.id) : '';
+
+          const shipmentPayload = {
+            brandId: effectiveBrandId,
+            brandName: brandObj ? brandObj.name : effectiveBrandId,
+            place: effectivePlace,
+            items: parsedShipmentItems,
+            authorName: author,
+            authorTgId: authorTg,
+            notes: shipmentNotes || 'Приемка поставки через CRM'
+          };
+
+          setNomenclature(prev => {
+            const list = [...prev];
+            parsedShipmentItems.forEach(it => {
+              const idx = list.findIndex(n => n.sku === it.sku);
+              if (idx >= 0) {
+                list[idx] = {
+                  ...list[idx],
+                  name: it.name || list[idx].name,
+                  category: it.category || list[idx].category,
+                  color: it.color || list[idx].color,
+                  size: it.size || list[idx].size,
+                  price: it.price || list[idx].price,
+                  barcode: it.barcode || list[idx].barcode
+                };
+              } else {
+                list.push({
+                  sku: it.sku,
+                  barcode: it.barcode || '',
+                  brandId: effectiveBrandId,
+                  brandName: brandObj ? brandObj.name : '',
+                  name: it.name,
+                  category: it.category || 'Одежда',
+                  color: it.color || '',
+                  size: it.size || '',
+                  price: it.price || 0,
+                  costPrice: it.costPrice || 0,
+                  description: '',
+                  photoUrl: ''
+                });
+              }
+            });
+            return list;
+          });
+
+          let newPiecesTotal = 0;
+          setStock(prev => {
+            const list = [...prev];
+            parsedShipmentItems.forEach(it => {
+              newPiecesTotal += Number(it.quantity) || 1;
+              const idx = list.findIndex(s => s.sku === it.sku && s.place === effectivePlace);
+              if (idx >= 0) {
+                const cur = Number(list[idx].quantity) || 0;
+                list[idx] = {
+                  ...list[idx],
+                  quantity: cur + (Number(it.quantity) || 1),
+                  available: cur + (Number(it.quantity) || 1),
+                  updatedAt: getTodayDateString()
+                };
+              } else {
+                list.push({
+                  sku: it.sku,
+                  barcode: it.barcode || '',
+                  brandId: effectiveBrandId,
+                  brandName: brandObj ? brandObj.name : '',
+                  place: effectivePlace,
+                  quantity: Number(it.quantity) || 1,
+                  reserved: 0,
+                  available: Number(it.quantity) || 1,
+                  price: it.price || 0,
+                  updatedAt: getTodayDateString()
+                });
+              }
+            });
+            return list;
+          });
+
+          const newOps = parsedShipmentItems.map(it => ({
+            id: 'op-shipment-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+            timestamp: new Date().toLocaleString('ru-RU'),
+            type: 'Поставка',
+            sku: it.sku,
+            barcode: it.barcode,
+            productName: it.name,
+            brandId: effectiveBrandId,
+            brandName: brandObj ? brandObj.name : '',
+            quantity: it.quantity,
+            price: it.price,
+            totalAmount: it.quantity * it.price,
+            place: effectivePlace,
+            authorName: author,
+            authorTgId: authorTg,
+            receiptId: 'НАКЛАДНАЯ',
+            notes: shipmentNotes || 'Приемка поставки'
+          }));
+          setStockOperations(prev => [...newOps, ...prev]);
+
+          setBrands(prev => prev.map(b => {
+            if (b.id === effectiveBrandId) {
+              const current = (Number(b.currentStockCount) || 0) + newPiecesTotal;
+              return { ...b, currentStockCount: current, lastDeliveryDate: getTodayDateString() };
+            }
+            return b;
+          }));
+
+          haptic.notification('success');
+          showToast(`✅ Поставка принята: +${newPiecesTotal} шт. на ${effectivePlace}!`);
+          setIsShipmentModalOpen(false);
+          setParsedShipmentItems([]);
+
+          if (gasUrl) {
+            queueCloudSync(() => CloudStorageService.importShipment(gasUrlRef.current, gasApiKeyRef.current, shipmentPayload));
+          }
+          addAuditLog('СКЛАД', `Принята поставка для «${brandObj?.name || effectiveBrandId}»: ${parsedShipmentItems.length} позиций (+${newPiecesTotal} шт.) на ${effectivePlace}`);
+        } catch (err) {
+          showToast('Ошибка при оприходовании: ' + err.message);
+        } finally {
+          setIsSubmittingShipment(false);
+        }
+      };
+
       const setupBotInTelegram = async () => {
         if (!botToken) return alert('Укажите токен бота');
         try {
@@ -2918,6 +3562,131 @@
 
       const currentMonthKey = getCurrentMonthKey();
 
+      // Подсчет остатков и позиций для вкладки Склад и Кабинета бренда
+      const filteredStock = useMemo(() => {
+        return stock.filter(item => {
+          if (inventoryBrandFilter !== 'all' && item.brandId !== inventoryBrandFilter) return false;
+          if (inventoryPlaceFilter !== 'all' && item.place !== inventoryPlaceFilter) return false;
+          const avail = Number(item.available) ?? Number(item.quantity) ?? 0;
+          if (inventoryStatusFilter === 'low_stock' && (avail > 2 || avail <= 0)) return false;
+          if (inventoryStatusFilter === 'out_of_stock' && avail > 0) return false;
+          if (inventorySearchQuery.trim()) {
+            const q = inventorySearchQuery.toLowerCase().trim();
+            const nom = nomenclature.find(n => n.sku === item.sku) || {};
+            const matchesSku = (item.sku || '').toLowerCase().includes(q);
+            const matchesBarcode = (item.barcode || '').toLowerCase().includes(q);
+            const matchesName = ((nom.name || item.name || '')).toLowerCase().includes(q);
+            const matchesBrand = (item.brandName || '').toLowerCase().includes(q);
+            const matchesCategory = ((nom.category || '')).toLowerCase().includes(q);
+            const matchesColor = ((nom.color || '')).toLowerCase().includes(q);
+            const matchesSize = ((nom.size || '')).toLowerCase().includes(q);
+            if (!matchesSku && !matchesBarcode && !matchesName && !matchesBrand && !matchesCategory && !matchesColor && !matchesSize) {
+              return false;
+            }
+          }
+          return true;
+        });
+      }, [stock, nomenclature, inventoryBrandFilter, inventoryPlaceFilter, inventoryStatusFilter, inventorySearchQuery]);
+
+      const inventoryStats = useMemo(() => {
+        let totalPieces = 0;
+        let totalSum = 0;
+        let lowStockCount = 0;
+        const brandIdsSet = new Set();
+
+        stock.forEach(s => {
+          const qty = Number(s.available) || Number(s.quantity) || 0;
+          totalPieces += qty;
+          const nom = nomenclature.find(n => n.sku === s.sku);
+          const price = Number(nom?.price) || Number(s.price) || 0;
+          totalSum += qty * price;
+          if (qty <= 2 && qty > 0) lowStockCount++;
+          if (s.brandId) brandIdsSet.add(s.brandId);
+        });
+
+        return {
+          totalPieces,
+          totalSum,
+          lowStockCount,
+          uniqueBrandsCount: brandIdsSet.size
+        };
+      }, [stock, nomenclature]);
+
+      const filteredOperations = useMemo(() => {
+        return stockOperations.filter(op => {
+          if (inventoryBrandFilter !== 'all' && op.brandId !== inventoryBrandFilter) return false;
+          if (inventorySearchQuery.trim()) {
+            const q = inventorySearchQuery.toLowerCase().trim();
+            const matchesSku = (op.sku || '').toLowerCase().includes(q);
+            const matchesBarcode = (op.barcode || '').toLowerCase().includes(q);
+            const matchesName = (op.productName || '').toLowerCase().includes(q);
+            const matchesBrand = (op.brandName || '').toLowerCase().includes(q);
+            const matchesReceipt = (op.receiptId || '').toLowerCase().includes(q);
+            const matchesAuthor = (op.authorName || '').toLowerCase().includes(q);
+            if (!matchesSku && !matchesBarcode && !matchesName && !matchesBrand && !matchesReceipt && !matchesAuthor) {
+              return false;
+            }
+          }
+          return true;
+        });
+      }, [stockOperations, inventoryBrandFilter, inventorySearchQuery]);
+
+      // Данные для кабинета бренда (изолированное подмножество)
+      const effectiveBrandObj = useMemo(() => {
+        if (previewBrandId) {
+          return brands.find(b => b.id === previewBrandId) || null;
+        }
+        if (authState.role === 'brand') {
+          return brands.find(b => b.id === authState.brandId) || (brands.length === 1 ? brands[0] : null);
+        }
+        return null;
+      }, [previewBrandId, authState.role, authState.brandId, brands]);
+
+      const brandStock = useMemo(() => {
+        if (!effectiveBrandObj) return [];
+        return stock.filter(s => s.brandId === effectiveBrandObj.id);
+      }, [stock, effectiveBrandObj]);
+
+      const brandNomenclature = useMemo(() => {
+        if (!effectiveBrandObj) return [];
+        return nomenclature.filter(n => n.brandId === effectiveBrandObj.id);
+      }, [nomenclature, effectiveBrandObj]);
+
+      const brandOperations = useMemo(() => {
+        if (!effectiveBrandObj) return [];
+        return stockOperations.filter(op => op.brandId === effectiveBrandObj.id);
+      }, [stockOperations, effectiveBrandObj]);
+
+      const brandStats = useMemo(() => {
+        if (!effectiveBrandObj) return { totalQty: 0, totalRetail: 0, lowStock: 0, monthSalesQty: 0, monthSalesSum: 0 };
+        let totalQty = 0;
+        let totalRetail = 0;
+        let lowStock = 0;
+        brandStock.forEach(s => {
+          const qty = Number(s.available) || Number(s.quantity) || 0;
+          totalQty += qty;
+          const nom = brandNomenclature.find(n => n.sku === s.sku);
+          const price = Number(nom?.price) || Number(s.price) || 0;
+          totalRetail += qty * price;
+          if (qty <= 2 && qty > 0) lowStock++;
+        });
+
+        const now = new Date();
+        const curMonthStr = (now.getMonth() + 1).toString().padStart(2, '0') + '.' + now.getFullYear();
+        let monthSalesQty = 0;
+        let monthSalesSum = 0;
+        brandOperations.forEach(op => {
+          if (op.type === 'Продажа') {
+            if (op.timestamp && op.timestamp.includes(curMonthStr)) {
+              monthSalesQty += Number(op.quantity) || 1;
+              monthSalesSum += Number(op.totalAmount) || (Number(op.price) * (Number(op.quantity) || 1));
+            }
+          }
+        });
+
+        return { totalQty, totalRetail, lowStock, monthSalesQty, monthSalesSum };
+      }, [effectiveBrandObj, brandStock, brandNomenclature, brandOperations]);
+
       // =========================================================
       // ЭКРАН ПРОВЕРКИ ИЛИ ПОЛНОЙ БЛОКИРОВКИ ("ДОСТУП ОГРАНИЧЕН")
       // =========================================================
@@ -3062,6 +3831,9 @@
         ? STAGES
         : STAGES.filter(s => s.id === stageFilter);
 
+      const isBrandUser = authState.role === 'brand';
+      const showBrandPortal = isBrandUser || Boolean(previewBrandId);
+
       // =========================================================
       // ОСНОВНОЙ ИНТЕРФЕЙС
       // =========================================================
@@ -3077,6 +3849,368 @@
             </div>
           )}
 
+          {showBrandPortal ? (
+            /* ========================================================
+               ВЫДЕЛЕННЫЙ ЛИЧНЫЙ КАБИНЕТ БРЕНДА (BRAND PORTAL VIEW)
+               ======================================================== */
+            <div className="space-y-4 p-3 sm:p-5 max-w-6xl mx-auto w-full">
+              {previewBrandId && (
+                <div className="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl flex items-center justify-between text-xs font-bold shadow-md">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">👀</span>
+                    <span>Режим предпросмотра: Личный кабинет бренда «{effectiveBrandObj?.name}»</span>
+                  </div>
+                  <button
+                    onClick={() => setPreviewBrandId(null)}
+                    className="px-3 py-1 bg-white text-indigo-900 rounded-xl hover:bg-indigo-50 transition"
+                  >
+                    ✕ Закрыть предпросмотр
+                  </button>
+                </div>
+              )}
+
+              {/* ШАПКА КАБИНЕТА БРЕНДА */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-black text-lg shadow-sm">
+                    {effectiveBrandObj?.name?.slice(0, 2).toUpperCase() || 'БР'}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h1 className="text-lg sm:text-xl font-bold text-slate-900">
+                        {effectiveBrandObj?.name || 'Личный кабинет бренда'}
+                      </h1>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-800 border border-indigo-200">
+                        Бренд-резидент
+                      </span>
+                      {cloudStatus === 'synced' && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Синхронизировано
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {effectiveBrandObj?.category || 'Дизайнерская одежда'} • Размещение: <strong className="text-slate-800">{effectiveBrandObj?.railType || effectiveBrandObj?.railCount || 'Рейл'}</strong>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => {
+                      setShipmentBrandId(effectiveBrandObj?.id || '');
+                      setIsShipmentModalOpen(true);
+                    }}
+                    className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs"
+                  >
+                    <span>📥 Загрузить поставку (Excel)</span>
+                  </button>
+                  <button
+                    onClick={() => handleExportStockToExcel(effectiveBrandObj?.id)}
+                    className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition flex items-center gap-1"
+                  >
+                    <span>📊 Выгрузить остатки</span>
+                  </button>
+                  <button
+                    onClick={() => setIsCommerceMLModalOpen(true)}
+                    className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                  >
+                    <span>🌐 CML / Тильда</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* МЕТРИКИ БРЕНДА */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="text-slate-500 text-xs font-medium">Товаров в зале сейчас</div>
+                  <div className="text-2xl font-extrabold text-slate-900 mt-1">
+                    {brandStats.totalQty} <span className="text-sm font-normal text-slate-500">шт.</span>
+                  </div>
+                  <div className="text-xs text-emerald-700 font-bold mt-1">
+                    на сумму {brandStats.totalRetail.toLocaleString('ru-RU')} ₽
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="text-slate-500 text-xs font-medium">Аренда и размещение</div>
+                  <div className="text-lg font-bold text-slate-900 mt-1">
+                    {effectiveBrandObj?.railType || effectiveBrandObj?.railCount || 'Рейл'}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    Оплата до {effectiveBrandObj?.paymentDay || 1}-го числа • {(Number(effectiveBrandObj?.rentFee || effectiveBrandObj?.monthlyFee || 0)).toLocaleString('ru-RU')} ₽/мес
+                  </div>
+                </div>
+
+                <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="text-slate-500 text-xs font-medium">Продажи в этом месяце</div>
+                  <div className="text-2xl font-extrabold text-emerald-700 mt-1">
+                    {brandStats.monthSalesQty} <span className="text-sm font-normal text-slate-500">шт.</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    на сумму <strong className="text-slate-900">{brandStats.monthSalesSum.toLocaleString('ru-RU')} ₽</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* ПОДНАВИГАЦИЯ КАБИНЕТА БРЕНДА */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-xs flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => { haptic.selection(); setBrandPortalTab('stock'); }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${brandPortalTab === 'stock' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  📦 Мои остатки в зале ({brandStock.length})
+                </button>
+                <button
+                  onClick={() => { haptic.selection(); setBrandPortalTab('nomenclature'); }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${brandPortalTab === 'nomenclature' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  📋 Каталог позиций ({brandNomenclature.length})
+                </button>
+                <button
+                  onClick={() => { haptic.selection(); setBrandPortalTab('shipments'); }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${brandPortalTab === 'shipments' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  📥 Оформить поставку
+                </button>
+                <button
+                  onClick={() => { haptic.selection(); setBrandPortalTab('sales'); }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${brandPortalTab === 'sales' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  🧾 Чеки и история продаж ({brandOperations.length})
+                </button>
+              </div>
+
+              {/* СОДЕРЖИМОЕ ВКЛАДОК КАБИНЕТА БРЕНДА */}
+              {brandPortalTab === 'stock' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+                    <span className="font-bold text-sm text-slate-900">Вещи вашего бренда на рейлах и полках</span>
+                    <button
+                      onClick={() => handleExportStockToExcel(effectiveBrandObj?.id)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition flex items-center gap-1"
+                    >
+                      📊 Скачать Excel
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                        <tr>
+                          <th className="p-3.5">Товар</th>
+                          <th className="p-3.5">Артикул / Штрихкод</th>
+                          <th className="p-3.5">Размещение</th>
+                          <th className="p-3.5 text-center">В наличии</th>
+                          <th className="p-3.5 text-right">Розница</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {brandStock.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-8 text-center text-slate-400">
+                              <div className="text-2xl mb-1">📦</div>
+                              Остатков вашего бренда пока нет. Оформите поставку во вкладке «Оформить поставку».
+                            </td>
+                          </tr>
+                        ) : (
+                          brandStock.map((s, idx) => {
+                            const nom = brandNomenclature.find(n => n.sku === s.sku) || {};
+                            const avail = Number(s.available) || Number(s.quantity) || 0;
+                            const price = Number(nom.price) || Number(s.price) || 0;
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50/60">
+                                <td className="p-3.5 font-bold text-slate-900">
+                                  <div>{nom.name || s.name || s.sku}</div>
+                                  <div className="text-[11px] text-slate-400 font-normal">
+                                    {nom.category} {nom.color ? `• ${nom.color}` : ''} {nom.size ? `• р.${nom.size}` : ''}
+                                  </div>
+                                </td>
+                                <td className="p-3.5 font-mono text-[11px]">
+                                  <div className="text-slate-800 font-semibold">{s.sku}</div>
+                                  <div className="text-slate-400 text-[10px]">{s.barcode || '—'}</div>
+                                </td>
+                                <td className="p-3.5 text-slate-600 font-medium">
+                                  📍 {s.place || 'Рейл 1'}
+                                </td>
+                                <td className="p-3.5 text-center">
+                                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold inline-block min-w-[36px] ${
+                                    avail <= 0 ? 'bg-slate-200 text-slate-600' : avail <= 2 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                  }`}>
+                                    {avail} шт.
+                                  </span>
+                                  {avail <= 2 && avail > 0 && <div className="text-[9px] text-amber-700 font-bold mt-0.5">мало</div>}
+                                </td>
+                                <td className="p-3.5 text-right font-bold text-slate-900">
+                                  {price.toLocaleString('ru-RU')} ₽
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {brandPortalTab === 'nomenclature' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                  <div className="p-4 border-b border-slate-100 font-bold text-sm text-slate-900">
+                    Каталог наименований бренда ({brandNomenclature.length} позиций)
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                        <tr>
+                          <th className="p-3.5">Артикул</th>
+                          <th className="p-3.5">Наименование</th>
+                          <th className="p-3.5">Категория</th>
+                          <th className="p-3.5">Цвет / Размер</th>
+                          <th className="p-3.5 text-right">Розничная цена</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {brandNomenclature.map((nom, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50">
+                            <td className="p-3.5 font-mono font-bold text-slate-900">{nom.sku}</td>
+                            <td className="p-3.5 font-medium">{nom.name}</td>
+                            <td className="p-3.5 text-slate-500">{nom.category}</td>
+                            <td className="p-3.5 text-slate-500">{nom.color || '—'} / {nom.size || '—'}</td>
+                            <td className="p-3.5 text-right font-bold text-slate-900">{Number(nom.price || 0).toLocaleString('ru-RU')} ₽</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {brandPortalTab === 'shipments' && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <h3 className="font-bold text-base text-slate-900">📥 Оформление поставки в шоурум</h3>
+                      <p className="text-slate-500 mt-0.5">
+                        1. Скачайте шаблон Excel. 2. Заполните артикулы, размеры, цвета и количество. 3. Загрузите сюда.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleDownloadExcelTemplate}
+                      className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold transition flex items-center gap-1.5"
+                    >
+                      <span>📥</span>
+                      <span>Скачать шаблон Excel (.xlsx)</span>
+                    </button>
+                  </div>
+
+                  <div className="border-2 border-dashed border-slate-300 hover:border-slate-400 rounded-2xl p-6 text-center bg-slate-50/50 space-y-2">
+                    <div className="text-3xl">📊</div>
+                    <div className="font-bold text-slate-800 text-sm">Прикрепите заполненный файл накладной</div>
+                    <p className="text-slate-500 text-xs">Форматы: .xlsx, .xls, .csv</p>
+                    <label className="inline-block mt-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold cursor-pointer transition shadow-xs">
+                      <span>Выбрать файл</span>
+                      <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelFileSelect} className="hidden" />
+                    </label>
+                  </div>
+
+                  {parsedShipmentItems.length > 0 && (
+                    <div className="space-y-3 pt-2">
+                      <div className="font-bold text-slate-900">
+                        В файле найдено: {parsedShipmentItems.length} позиций (+{parsedShipmentItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} шт.)
+                      </div>
+                      <div className="border border-slate-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
+                            <tr>
+                              <th className="p-2.5">Артикул</th>
+                              <th className="p-2.5">Наименование</th>
+                              <th className="p-2.5">Цвет / Размер</th>
+                              <th className="p-2.5 text-center">Кол-во</th>
+                              <th className="p-2.5 text-right">Цена</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {parsedShipmentItems.map((item, idx) => (
+                              <tr key={idx}>
+                                <td className="p-2.5 font-mono font-semibold">{item.sku}</td>
+                                <td className="p-2.5">{item.name}</td>
+                                <td className="p-2.5 text-slate-500">{item.color || '—'} / {item.size || '—'}</td>
+                                <td className="p-2.5 text-center font-bold text-slate-900">{item.quantity} шт.</td>
+                                <td className="p-2.5 text-right font-bold">{Number(item.price || 0).toLocaleString('ru-RU')} ₽</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isSubmittingShipment}
+                        onClick={handleSubmitShipment}
+                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition text-xs shadow-xs"
+                      >
+                        {isSubmittingShipment ? 'Отправка...' : `Отправить поставку на приемку (+${parsedShipmentItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} шт.)`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {brandPortalTab === 'sales' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                  <div className="p-4 border-b border-slate-100 font-bold text-sm text-slate-900">
+                    История продаж и движений ваших товаров
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                        <tr>
+                          <th className="p-3.5">Дата / Время</th>
+                          <th className="p-3.5">Тип</th>
+                          <th className="p-3.5">Товар</th>
+                          <th className="p-3.5 text-center">Кол-во</th>
+                          <th className="p-3.5 text-right">Сумма</th>
+                          <th className="p-3.5">Чек / Накладная</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {brandOperations.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-slate-400">
+                              Продаж пока не зафиксировано.
+                            </td>
+                          </tr>
+                        ) : (
+                          brandOperations.map(op => (
+                            <tr key={op.id} className="hover:bg-slate-50">
+                              <td className="p-3.5 text-slate-400 font-mono text-[11px]">{op.timestamp}</td>
+                              <td className="p-3.5">
+                                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                  op.type === 'Продажа' ? 'bg-emerald-100 text-emerald-800' : op.type === 'Поставка' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800'
+                                }`}>
+                                  {op.type}
+                                </span>
+                              </td>
+                              <td className="p-3.5 font-bold text-slate-900">
+                                <div>{op.productName || op.sku}</div>
+                                <div className="text-[10px] font-mono text-slate-400">{op.sku}</div>
+                              </td>
+                              <td className="p-3.5 text-center font-bold">{op.quantity} шт.</td>
+                              <td className="p-3.5 text-right font-bold text-emerald-700">{Number(op.totalAmount || 0).toLocaleString('ru-RU')} ₽</td>
+                              <td className="p-3.5 text-slate-500 font-mono text-[11px]">{op.receiptId || '—'}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
           {/* БАННЕР ПЕРВИЧНОЙ МИГРАЦИИ (ANTI-WIPE GUARD) */}
           {cloudStatus === 'needs_migration' && !isMigrationModalOpen && (
             <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3 sm:p-4 mb-2.5 sm:mb-4 flex flex-wrap items-center justify-between gap-2.5 shadow-xs">
@@ -3406,6 +4540,18 @@
                 {financeStats.overdueBrands.length > 0 && (
                   <span className="ml-0.5 px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
                     {financeStats.overdueBrands.length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                onClick={() => { haptic.selection(); setActiveTab('inventory'); setIsMoreMenuOpen(false); }}
+                className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'inventory' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+              >
+                <span>📦 Склад & Касса</span>
+                {stock.filter(s => (Number(s.available) || Number(s.quantity) || 0) <= 2 && (Number(s.available) || Number(s.quantity) || 0) > 0).length > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 bg-amber-500 text-white rounded-full text-[10px]">
+                    {stock.filter(s => (Number(s.available) || Number(s.quantity) || 0) <= 2 && (Number(s.available) || Number(s.quantity) || 0) > 0).length}
                   </span>
                 )}
               </button>
@@ -5202,6 +6348,779 @@
             </div>
           )}
 
+          {/* ВКЛАДКА: 📦 СКЛАД, КАССА И ТОВАРНЫЙ УЧЕТ */}
+          {activeTab === 'inventory' && (
+            <div className="space-y-4 sm:space-y-5">
+              {/* ПОДНАВИГАЦИЯ ВКЛАДКИ СКЛАД */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-2 sm:p-3 shadow-xs flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  <button
+                    onClick={() => { haptic.selection(); setInventorySubTab('stock'); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      inventorySubTab === 'stock' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <span>📦 Остатки в зале</span>
+                    <span className="px-1.5 py-0.2 bg-white/20 rounded-full text-[10px]">
+                      {filteredStock.length}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setInventorySubTab('pos'); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      inventorySubTab === 'pos' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <span>💰 Быстрая касса / Продажа</span>
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setInventorySubTab('shipments'); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      inventorySubTab === 'shipments' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <span>📥 Приемка поставок (Excel)</span>
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setInventorySubTab('operations'); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      inventorySubTab === 'operations' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <span>🧾 Журнал движения</span>
+                    <span className="px-1.5 py-0.2 bg-slate-200 text-slate-800 rounded-full text-[10px]">
+                      {stockOperations.length}
+                    </span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleScanBarcode}
+                    className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                    title="Сканировать или ввести штрихкод товара"
+                  >
+                    <span>📷</span>
+                    <span>Штрихкод</span>
+                  </button>
+                  <button
+                    onClick={() => handleOpenPosModal(null, 'Продажа')}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-xs"
+                  >
+                    <span>+ Продажа</span>
+                  </button>
+                  <button
+                    onClick={() => setIsShipmentModalOpen(true)}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition flex items-center gap-1"
+                  >
+                    <span>📥 Загрузить Excel</span>
+                  </button>
+                  <button
+                    onClick={() => handleExportStockToExcel()}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition flex items-center gap-1"
+                    title="Выгрузить текущие остатки в Excel"
+                  >
+                    <span>📊 Excel</span>
+                  </button>
+                  <button
+                    onClick={() => setIsCommerceMLModalOpen(true)}
+                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                    title="CommerceML выгрузка для Tilda / 1C"
+                  >
+                    <span>🌐 CML / Тильда</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* СВОДНЫЕ МЕТРИКИ СКЛАДА */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+                <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="text-slate-500 text-[11px] font-medium">Всего единиц в зале</div>
+                  <div className="text-xl sm:text-2xl font-extrabold text-slate-900 mt-0.5">
+                    {inventoryStats.totalPieces.toLocaleString('ru-RU')} <span className="text-xs text-slate-500 font-normal">шт.</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">Позиций номенклатуры: {nomenclature.length}</div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-2xl border border-emerald-200 bg-emerald-50/20 shadow-xs">
+                  <div className="text-emerald-700 text-[11px] font-medium">Розничная стоимость остатков</div>
+                  <div className="text-xl sm:text-2xl font-extrabold text-emerald-800 mt-0.5">
+                    {inventoryStats.totalSum.toLocaleString('ru-RU')} <span className="text-xs text-emerald-700 font-normal">₽</span>
+                  </div>
+                  <div className="text-[10px] text-emerald-600 mt-1">В ценах шоурума</div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-xs">
+                  <div className="text-amber-800 text-[11px] font-medium">Заканчиваются (≤ 2 шт.)</div>
+                  <div className="text-xl sm:text-2xl font-extrabold text-amber-900 mt-0.5">
+                    {inventoryStats.lowStockCount} <span className="text-xs text-amber-800 font-normal">поз.</span>
+                  </div>
+                  <div className="text-[10px] text-amber-700 mt-1">Требуется дозаказ поставки</div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-2xl border border-sky-200 bg-sky-50/20 shadow-xs">
+                  <div className="text-sky-800 text-[11px] font-medium">Брендов на остатках</div>
+                  <div className="text-xl sm:text-2xl font-extrabold text-sky-900 mt-0.5">
+                    {inventoryStats.uniqueBrandsCount} <span className="text-xs text-sky-800 font-normal">брендов</span>
+                  </div>
+                  <div className="text-[10px] text-sky-600 mt-1">С активным товаром на рейлах</div>
+                </div>
+              </div>
+
+              {/* ПОДВКЛАДКА 1: ОСТАТКИ НА СКЛАДЕ И В ЗАЛЕ */}
+              {inventorySubTab === 'stock' && (
+                <div className="space-y-4">
+                  {/* ПАНЕЛЬ ПОИСКА И ФИЛЬТРОВ */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 shadow-xs space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      <div className="sm:col-span-2 relative">
+                        <input
+                          type="text"
+                          value={inventorySearchQuery}
+                          onChange={e => setInventorySearchQuery(e.target.value)}
+                          placeholder="Поиск по названию, артикулу, штрихкоду, цвету, размеру..."
+                          className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-xs outline-none focus:ring-1 focus:ring-slate-900"
+                        />
+                        <span className="absolute left-3 top-2.5 text-slate-400 text-xs">🔍</span>
+                        {inventorySearchQuery && (
+                          <button
+                            onClick={() => setInventorySearchQuery('')}
+                            className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 text-xs"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+
+                      <div>
+                        <select
+                          value={inventoryBrandFilter}
+                          onChange={e => setInventoryBrandFilter(e.target.value)}
+                          className="w-full py-2 px-3 border border-slate-200 rounded-xl text-xs bg-white font-medium outline-none"
+                        >
+                          <option value="all">Все бренды ({brands.length})</option>
+                          {brands.map(b => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <select
+                          value={inventoryPlaceFilter}
+                          onChange={e => setInventoryPlaceFilter(e.target.value)}
+                          className="w-full py-2 px-3 border border-slate-200 rounded-xl text-xs bg-white font-medium outline-none"
+                        >
+                          <option value="all">Все локации зала</option>
+                          <option value="Рейл 1">Рейл 1</option>
+                          <option value="Рейл 2">Рейл 2</option>
+                          <option value="Рейл 3">Рейл 3</option>
+                          <option value="Рейл 4">Рейл 4</option>
+                          <option value="Рейл 5">Рейл 5</option>
+                          <option value="Полка 1">Полка 1</option>
+                          <option value="Полка 2">Полка 2</option>
+                          <option value="Полка 3">Полка 3</option>
+                          <option value="Корнер 1">Корнер 1</option>
+                          <option value="Корнер 2">Корнер 2</option>
+                          <option value="Склад">Склад</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100 flex-wrap gap-2">
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-700 font-medium">
+                          <input
+                            type="checkbox"
+                            checked={inventoryStatusFilter === 'low_stock'}
+                            onChange={e => setInventoryStatusFilter(e.target.checked ? 'low_stock' : 'all')}
+                            className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                          />
+                          <span>⚠️ Только заканчивающиеся (≤ 2 шт.)</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none text-slate-700 font-medium">
+                          <input
+                            type="checkbox"
+                            checked={inventoryStatusFilter === 'out_of_stock'}
+                            onChange={e => setInventoryStatusFilter(e.target.checked ? 'out_of_stock' : 'all')}
+                            className="rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+                          />
+                          <span>🚫 Нет в наличии (0 шт.)</span>
+                        </label>
+                      </div>
+
+                      <div className="text-slate-500 text-[11px]">
+                        Показано: <strong className="text-slate-900">{filteredStock.length}</strong> позиций
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ТАБЛИЦА ТОВАРНЫХ ОСТАТКОВ */}
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                          <tr>
+                            <th className="p-3.5">Товар / Категория</th>
+                            <th className="p-3.5">Артикул / Штрихкод</th>
+                            <th className="p-3.5">Бренд</th>
+                            <th className="p-3.5">Локация</th>
+                            <th className="p-3.5 text-center">Остаток</th>
+                            <th className="p-3.5 text-right">Розница</th>
+                            <th className="p-3.5 text-right">Быстрые действия</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredStock.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="p-8 text-center text-slate-400">
+                                <div className="text-2xl mb-1">📦</div>
+                                <div className="font-semibold text-slate-600">Остатков по выбранным фильтрам не найдено</div>
+                                <div className="text-xs text-slate-400 mt-0.5">
+                                  Загрузите накладную через кнопку «📥 Загрузить Excel» или отсканируйте штрихкод.
+                                </div>
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredStock.map((item, idx) => {
+                              const nom = nomenclature.find(n => n.sku === item.sku) || {};
+                              const avail = Number(item.available) ?? Number(item.quantity) ?? 0;
+                              const price = Number(nom.price) || Number(item.price) || 0;
+                              const isLow = avail <= 2 && avail > 0;
+                              const isOut = avail <= 0;
+
+                              return (
+                                <tr key={item.sku + '-' + item.place + '-' + idx} className="hover:bg-slate-50/60 transition">
+                                  <td className="p-3.5">
+                                    <div className="flex items-center gap-2.5">
+                                      {nom.photoUrl ? (
+                                        <img src={nom.photoUrl} alt="" className="w-9 h-9 rounded-lg object-cover border border-slate-200 shrink-0" />
+                                      ) : (
+                                        <div className="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs shrink-0">
+                                          👕
+                                        </div>
+                                      )}
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-slate-900 truncate">
+                                          {nom.name || item.name || item.sku}
+                                        </div>
+                                        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap">
+                                          {nom.category && <span>{nom.category}</span>}
+                                          {nom.color && <span>• {nom.color}</span>}
+                                          {nom.size && <span className="font-semibold text-slate-700 bg-slate-100 px-1 rounded">р.{nom.size}</span>}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  <td className="p-3.5 font-mono text-[11px]">
+                                    <div className="text-slate-900 font-semibold">{item.sku}</div>
+                                    <div className="text-slate-400 text-[10px]">{item.barcode || '—'}</div>
+                                  </td>
+
+                                  <td className="p-3.5">
+                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-sky-50 text-sky-800 border border-sky-200">
+                                      {item.brandName || brands.find(b => b.id === item.brandId)?.name || 'Бренд'}
+                                    </span>
+                                  </td>
+
+                                  <td className="p-3.5">
+                                    <span className="px-2 py-0.5 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                                      📍 {item.place || 'Рейл 1'}
+                                    </span>
+                                  </td>
+
+                                  <td className="p-3.5 text-center">
+                                    <span
+                                      className={`px-2.5 py-1 rounded-full text-xs font-bold inline-block min-w-[36px] ${
+                                        isOut
+                                          ? 'bg-slate-200 text-slate-600'
+                                          : isLow
+                                          ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                          : 'bg-emerald-100 text-emerald-800'
+                                      }`}
+                                    >
+                                      {avail} шт.
+                                    </span>
+                                    {isLow && (
+                                      <div className="text-[9px] text-amber-700 font-bold mt-0.5">мало!</div>
+                                    )}
+                                  </td>
+
+                                  <td className="p-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                    {price.toLocaleString('ru-RU')} ₽
+                                  </td>
+
+                                  <td className="p-3.5 text-right whitespace-nowrap">
+                                    <div className="flex items-center justify-end gap-1">
+                                      <button
+                                        disabled={avail <= 0}
+                                        onClick={() => handleExecutePosOperation({
+                                          type: 'Продажа',
+                                          item,
+                                          qty: 1,
+                                          price,
+                                          place: item.place,
+                                          paymentType: 'Карта / Терминал'
+                                        })}
+                                        className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-bold transition disabled:opacity-40"
+                                        title="Быстрая продажа 1 шт."
+                                      >
+                                        -1 Продажа
+                                      </button>
+                                      <button
+                                        onClick={() => handleExecutePosOperation({
+                                          type: 'Возврат',
+                                          item,
+                                          qty: 1,
+                                          price,
+                                          place: item.place,
+                                          paymentType: 'Возврат клиенту'
+                                        })}
+                                        className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold transition"
+                                        title="Возврат товара от покупателя"
+                                      >
+                                        +1 Возврат
+                                      </button>
+                                      <button
+                                        onClick={() => handleOpenPosModal(item, 'Перемещение')}
+                                        className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-medium transition"
+                                        title="Переместить между рейлами или на склад"
+                                      >
+                                        ⇄ Место
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ПОДВКЛАДКА 2: БЫСТРАЯ КАССА (POS) */}
+              {inventorySubTab === 'pos' && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-900">💰 Кассовая операция</h3>
+                      <p className="text-slate-500 mt-0.5">
+                        Проведение продажи, возврата, списания или перемещения товара в один клик.
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Тип операции:</label>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {['Продажа', 'Возврат', 'Списание', 'Перемещение'].map(type => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => setPosActionType(type)}
+                              className={`py-2 px-3 rounded-xl font-bold text-xs transition border ${
+                                posActionType === type
+                                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {type === 'Продажа' ? '🛍 Продажа' : type === 'Возврат' ? '↩️ Возврат' : type === 'Списание' ? '🗑 Списание' : '⇄ Перемещение'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Выберите товар (или введите штрихкод):</label>
+                        <select
+                          value={posSelectedItem?.sku || ''}
+                          onChange={e => {
+                            const found = stock.find(s => s.sku === e.target.value);
+                            setPosSelectedItem(found || null);
+                            if (found) {
+                              const nom = nomenclature.find(n => n.sku === found.sku);
+                              setPosPrice(Number(nom?.price) || Number(found.price) || 0);
+                              setPosPlace(found.place || 'Рейл 1');
+                            }
+                          }}
+                          className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-medium text-xs outline-none"
+                        >
+                          <option value="">-- Выберите позицию из остатков --</option>
+                          {stock.map(s => {
+                            const nom = nomenclature.find(n => n.sku === s.sku) || {};
+                            return (
+                              <option key={s.sku + '-' + s.place} value={s.sku}>
+                                {nom.name || s.name || s.sku} [{s.sku}] • {s.place} ({s.available || s.quantity} шт.) — {nom.price || s.price} ₽
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">Количество (шт.):</label>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setPosQty(prev => Math.max(1, prev - 1))}
+                              className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-slate-700 text-sm"
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min="1"
+                              value={posQty}
+                              onChange={e => setPosQty(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full text-center border border-slate-200 rounded-xl py-2 font-bold text-slate-900 text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setPosQty(prev => prev + 1)}
+                              className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-slate-700 text-sm"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">Цена за единицу (₽):</label>
+                          <input
+                            type="number"
+                            value={posPrice}
+                            onChange={e => setPosPrice(Number(e.target.value) || 0)}
+                            className="w-full border border-slate-200 rounded-xl p-2 font-bold text-slate-900 text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">Локация списания:</label>
+                          <select
+                            value={posPlace}
+                            onChange={e => setPosPlace(e.target.value)}
+                            className="w-full border border-slate-200 rounded-xl p-2 bg-white text-xs"
+                          >
+                            <option value="Рейл 1">Рейл 1</option>
+                            <option value="Рейл 2">Рейл 2</option>
+                            <option value="Рейл 3">Рейл 3</option>
+                            <option value="Рейл 4">Рейл 4</option>
+                            <option value="Полка 1">Полка 1</option>
+                            <option value="Полка 2">Полка 2</option>
+                            <option value="Корнер 1">Корнер 1</option>
+                            <option value="Склад">Склад</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">Способ оплаты / Чек:</label>
+                          <select
+                            value={posPaymentType}
+                            onChange={e => setPosPaymentType(e.target.value)}
+                            className="w-full border border-slate-200 rounded-xl p-2 bg-white text-xs"
+                          >
+                            <option value="Терминал / Карта">Терминал / Карта</option>
+                            <option value="СБП / QR-код">СБП / QR-код</option>
+                            <option value="Наличные">Наличные</option>
+                            <option value="Перевод">Перевод</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex justify-between items-center font-bold">
+                        <span className="text-slate-700">Итоговая сумма:</span>
+                        <span className="text-base text-emerald-700">{(posQty * posPrice).toLocaleString('ru-RU')} ₽</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!posSelectedItem || isSubmittingPos}
+                        onClick={() => {
+                          if (!posSelectedItem) {
+                            showToast('Выберите товар для операции');
+                            return;
+                          }
+                          handleExecutePosOperation({
+                            type: posActionType,
+                            item: posSelectedItem,
+                            qty: posQty,
+                            price: posPrice,
+                            place: posPlace,
+                            paymentType: posPaymentType,
+                            notes: posNotes
+                          });
+                        }}
+                        className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition text-xs shadow-xs disabled:opacity-40"
+                      >
+                        {isSubmittingPos ? 'Проведение...' : `Подтвердить: ${posActionType} (${(posQty * posPrice).toLocaleString('ru-RU')} ₽)`}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                    <h3 className="font-bold text-sm text-slate-900">🧾 Последние 5 кассовых операций</h3>
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {stockOperations.slice(0, 5).map(op => (
+                        <div key={op.id} className="py-2.5 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  op.type === 'Продажа'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : op.type === 'Возврат'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : op.type === 'Поставка'
+                                    ? 'bg-sky-100 text-sky-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                {op.type}
+                              </span>
+                              <span className="font-bold text-slate-900 truncate">
+                                {op.productName || op.sku}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              {op.timestamp} • {op.place} • Чек: {op.receiptId || '—'}
+                            </div>
+                          </div>
+
+                          <div className="text-right whitespace-nowrap">
+                            <div className="font-bold text-slate-900">
+                              {op.quantity} шт. × {Number(op.price || 0).toLocaleString('ru-RU')} ₽
+                            </div>
+                            <div className="text-[11px] text-emerald-700 font-semibold">
+                              = {Number(op.totalAmount || 0).toLocaleString('ru-RU')} ₽
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ПОДВКЛАДКА 3: ПРИЕМКА ПОСТАВОК (EXCEL) */}
+              {inventorySubTab === 'shipments' && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-5 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <h3 className="font-bold text-base text-slate-900">📥 Приемка новой поставки в шоурум</h3>
+                      <p className="text-slate-500 mt-0.5">
+                        Загрузите Excel-накладную (.xlsx, .xls) от бренда для оприходования вещей на рейлы и полки.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadExcelTemplate}
+                      className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl font-bold transition flex items-center gap-1.5"
+                    >
+                      <span>📥</span>
+                      <span>Скачать шаблон накладной Excel (.xlsx)</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Бренд-отправитель *</label>
+                      <select
+                        value={shipmentBrandId}
+                        onChange={e => setShipmentBrandId(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold text-xs"
+                      >
+                        <option value="">-- Выберите бренд из CRM --</option>
+                        {brands.map(b => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} (Рейл: {b.railType || b.railCount || '—'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Целевое место размещения в зале *</label>
+                      <select
+                        value={shipmentPlace}
+                        onChange={e => setShipmentPlace(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold text-xs"
+                      >
+                        <option value="Рейл 1">Рейл 1</option>
+                        <option value="Рейл 2">Рейл 2</option>
+                        <option value="Рейл 3">Рейл 3</option>
+                        <option value="Рейл 4">Рейл 4</option>
+                        <option value="Рейл 5">Рейл 5</option>
+                        <option value="Полка 1">Полка 1</option>
+                        <option value="Полка 2">Полка 2</option>
+                        <option value="Корнер 1">Корнер 1</option>
+                        <option value="Склад">Склад</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* DROPZONE EXCEL ФАЙЛА */}
+                  <div className="border-2 border-dashed border-slate-300 hover:border-slate-400 rounded-2xl p-6 text-center bg-slate-50/50 space-y-2">
+                    <div className="text-3xl">📊</div>
+                    <div className="font-bold text-slate-800 text-sm">Выберите Excel файл накладной</div>
+                    <p className="text-slate-500 text-xs max-w-md mx-auto">
+                      Поддерживаются колонки: Артикул (SKU), Наименование, Категория, Цвет, Размер, Количество, Розничная цена, Штрихкод.
+                    </p>
+                    <label className="inline-block mt-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold cursor-pointer transition shadow-xs">
+                      <span>Обзор файлов (.xlsx, .xls)</span>
+                      <input
+                        type="file"
+                        accept=".xlsx, .xls, .csv"
+                        onChange={handleExcelFileSelect}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {/* ПРЕДПРОСМОТР РАСПАРСЕННОГО ФАЙЛА */}
+                  {parsedShipmentItems.length > 0 && (
+                    <div className="space-y-3 pt-2 border-t border-slate-100">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900 text-sm">
+                          Предпросмотр накладной: {parsedShipmentItems.length} позиций (+{parsedShipmentItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} шт.)
+                        </span>
+                        <span className="font-bold text-emerald-700">
+                          Сумма поставки: {parsedShipmentItems.reduce((acc, it) => acc + ((Number(it.quantity) || 0) * (Number(it.price) || 0)), 0).toLocaleString('ru-RU')} ₽
+                        </span>
+                      </div>
+
+                      <div className="border border-slate-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
+                            <tr>
+                              <th className="p-2.5">Артикул</th>
+                              <th className="p-2.5">Наименование</th>
+                              <th className="p-2.5">Цвет / Размер</th>
+                              <th className="p-2.5 text-center">Кол-во</th>
+                              <th className="p-2.5 text-right">Цена</th>
+                              <th className="p-2.5 text-right">Сумма</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {parsedShipmentItems.map((item, idx) => (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-mono font-semibold">{item.sku}</td>
+                                <td className="p-2.5 font-medium">{item.name}</td>
+                                <td className="p-2.5 text-slate-500">{item.color || '—'} / {item.size || '—'}</td>
+                                <td className="p-2.5 text-center font-bold text-slate-900">{item.quantity} шт.</td>
+                                <td className="p-2.5 text-right">{Number(item.price || 0).toLocaleString('ru-RU')} ₽</td>
+                                <td className="p-2.5 text-right font-bold text-emerald-700">
+                                  {(item.quantity * item.price).toLocaleString('ru-RU')} ₽
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={isSubmittingShipment}
+                        onClick={handleSubmitShipment}
+                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition text-xs shadow-xs disabled:opacity-40"
+                      >
+                        {isSubmittingShipment ? 'Оприходование на склад...' : `✅ Принять поставку (+${parsedShipmentItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} шт. на ${shipmentPlace})`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ПОДВКЛАДКА 4: ЖУРНАЛ ОПЕРАЦИЙ */}
+              {inventorySubTab === 'operations' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                  <div className="p-3.5 border-b border-slate-200 flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-900">Неизменяемый реестр операций склада и кассы</span>
+                    <span className="text-slate-400">Всего записей: {stockOperations.length}</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                        <tr>
+                          <th className="p-3.5">Дата / Время</th>
+                          <th className="p-3.5">Тип</th>
+                          <th className="p-3.5">Товар / Артикул</th>
+                          <th className="p-3.5">Бренд</th>
+                          <th className="p-3.5 text-center">Кол-во</th>
+                          <th className="p-3.5 text-right">Сумма</th>
+                          <th className="p-3.5">Место</th>
+                          <th className="p-3.5">Чек / Автор</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {stockOperations.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="p-8 text-center text-slate-400">
+                              Операций пока нет. Они появятся автоматически при продажах и приемке поставок.
+                            </td>
+                          </tr>
+                        ) : (
+                          stockOperations.map(op => (
+                            <tr key={op.id} className="hover:bg-slate-50/60">
+                              <td className="p-3.5 text-slate-400 font-mono text-[11px] whitespace-nowrap">
+                                {op.timestamp}
+                              </td>
+                              <td className="p-3.5">
+                                <span
+                                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                    op.type === 'Продажа'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : op.type === 'Возврат'
+                                      ? 'bg-amber-100 text-amber-800'
+                                      : op.type === 'Поставка'
+                                      ? 'bg-sky-100 text-sky-800'
+                                      : 'bg-rose-100 text-rose-800'
+                                  }`}
+                                >
+                                  {op.type}
+                                </span>
+                              </td>
+                              <td className="p-3.5 font-bold text-slate-900">
+                                <div>{op.productName || op.sku}</div>
+                                <div className="text-[10px] font-mono text-slate-400">{op.sku}</div>
+                              </td>
+                              <td className="p-3.5 text-slate-600 font-medium">
+                                {op.brandName || brands.find(b => b.id === op.brandId)?.name || '—'}
+                              </td>
+                              <td className="p-3.5 text-center font-bold text-slate-900">
+                                {op.quantity} шт.
+                              </td>
+                              <td className="p-3.5 text-right font-bold text-emerald-700 whitespace-nowrap">
+                                {Number(op.totalAmount || 0).toLocaleString('ru-RU')} ₽
+                              </td>
+                              <td className="p-3.5 text-slate-600">
+                                📍 {op.place || 'Рейл 1'}
+                              </td>
+                              <td className="p-3.5 text-slate-500 text-[11px]">
+                                <div>{op.receiptId || '—'}</div>
+                                <div className="text-[10px] text-slate-400">@{op.authorName || 'кассир'}</div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ВКЛАДКА 3: ТАБЛИЦА КОНТАКТОВ */}
           {activeTab === 'list' && (
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
@@ -5419,15 +7338,37 @@
                   <div>
                     <label className="block font-semibold text-slate-700 mb-1">Роль доступа</label>
                     <select
-                      value={isOwner ? newAclRole : 'user'}
+                      value={isOwner ? newAclRole : 'seller'}
                       disabled={!isOwner}
                       onChange={e => setNewAclRole(e.target.value)}
                       className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold"
                     >
-                      <option value="user">Пользователь (Редактирование данных)</option>
+                      <option value="seller">Продавец (Склад, Касса, Каталог)</option>
+                      <option value="brand">Бренд (Кабинет бренда: остатки, поставки, продажи)</option>
                       {isOwner && <option value="admin">Админ (Управление пользователями и данными)</option>}
                     </select>
                   </div>
+                  {newAclRole === 'brand' && (
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Закрепленный бренд *</label>
+                      <select
+                        value={newAclBrandId}
+                        onChange={e => setNewAclBrandId(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold"
+                        required
+                      >
+                        <option value="">-- Выберите бренд из CRM --</option>
+                        {brands.map(b => (
+                          <option key={b.id} value={b.id}>
+                            {b.name} (Место: {b.railType || b.railCount || '—'}, Оплата: {b.rentFee ? b.rentFee + '₽' : '—'})
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Пользователь с ролью «Бренд» будет видеть исключительно остатки, операции и аналитику выбранного бренда.
+                      </p>
+                    </div>
+                  )}
                   <button
                     type="submit"
                     className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition"
@@ -5457,7 +7398,8 @@
                     <tbody className="divide-y divide-slate-100">
                       {aclUsers.map(sanitizeAclUser).map(u => {
                         const lockedOwner = u.immutable || isImmutableOwner(u.username, u.phone);
-                        const roleInfo = ROLES[u.role] || ROLES.user;
+                        const roleInfo = ROLES[u.role] || ROLES.seller || ROLES.user;
+                        const boundBrand = brands.find(b => b.id === u.brandId);
                         return (
                           <tr key={u.id} className={lockedOwner ? 'bg-amber-50/40' : ''}>
                             <td className="p-3 font-bold text-slate-900">
@@ -5484,18 +7426,40 @@
                                   👑 Владелец (Неизменяемый)
                                 </span>
                               ) : isOwner ? (
-                                <select
-                                  value={u.role}
-                                  onChange={e => handleChangeUserRole(u.id, e.target.value)}
-                                  className="border border-slate-200 rounded-lg px-2 py-1 font-semibold bg-white"
-                                >
-                                  <option value="admin">Админ</option>
-                                  <option value="user">Пользователь</option>
-                                </select>
+                                <div className="space-y-1.5">
+                                  <select
+                                    value={u.role === 'user' ? 'seller' : u.role}
+                                    onChange={e => handleChangeUserRole(u.id, e.target.value)}
+                                    className="border border-slate-200 rounded-lg px-2 py-1 font-semibold bg-white text-xs w-full max-w-[140px]"
+                                  >
+                                    <option value="admin">Админ</option>
+                                    <option value="seller">Продавец</option>
+                                    <option value="brand">Бренд</option>
+                                  </select>
+                                  {u.role === 'brand' && (
+                                    <select
+                                      value={u.brandId || ''}
+                                      onChange={e => handleChangeUserBrand(u.id, e.target.value)}
+                                      className="border border-sky-200 rounded-lg px-2 py-1 font-medium bg-sky-50 text-[11px] text-sky-800 w-full max-w-[170px]"
+                                    >
+                                      <option value="">-- Выберите бренд --</option>
+                                      {brands.map(b => (
+                                        <option key={b.id} value={b.id}>{b.name}</option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </div>
                               ) : (
-                                <span className={`px-2.5 py-1 rounded-full text-[11px] border ${roleInfo.badge}`}>
-                                  {roleInfo.title}
-                                </span>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className={`px-2.5 py-1 rounded-full text-[11px] border ${roleInfo.badge}`}>
+                                    {roleInfo.title}
+                                  </span>
+                                  {u.role === 'brand' && (
+                                    <span className="text-[10px] text-slate-500 font-medium">
+                                      {boundBrand ? `Бренд: «${boundBrand.name}»` : 'Бренд не привязан'}
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </td>
                             <td className="p-3 text-slate-400 text-[11px]">{u.addedAt}</td>
@@ -5748,6 +7712,8 @@
                 </div>
               </div>
             </div>
+          )}
+            </>
           )}
 
           {/* МОДАЛЬНОЕ ОКНО СОЗДАНИЯ / РЕДАКТИРОВАНИЯ БРЕНДА */}
@@ -6664,6 +8630,386 @@
                   >
                     Закрыть окно бэкапа
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА 1: БЫСТРАЯ КАССОВАЯ ОПЕРАЦИЯ (POS) */}
+          {isPosModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+              <div className="bg-white rounded-2xl w-full max-w-md p-5 space-y-4 text-xs shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900">💰 Кассовая операция</h3>
+                    <p className="text-[11px] text-slate-400">Проведение продажи, возврата или списания</p>
+                  </div>
+                  <button
+                    onClick={() => setIsPosModalOpen(false)}
+                    className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Тип операции:</label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {['Продажа', 'Возврат', 'Списание', 'Перемещение'].map(type => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setPosActionType(type)}
+                          className={`py-2 px-3 rounded-xl font-bold text-xs transition border ${
+                            posActionType === type
+                              ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          {type === 'Продажа' ? '🛍 Продажа' : type === 'Возврат' ? '↩️ Возврат' : type === 'Списание' ? '🗑 Списание' : '⇄ Перемещение'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Товар:</label>
+                    <select
+                      value={posSelectedItem?.sku || ''}
+                      onChange={e => {
+                        const found = stock.find(s => s.sku === e.target.value);
+                        setPosSelectedItem(found || null);
+                        if (found) {
+                          const nom = nomenclature.find(n => n.sku === found.sku);
+                          setPosPrice(Number(nom?.price) || Number(found.price) || 0);
+                          setPosPlace(found.place || 'Рейл 1');
+                        }
+                      }}
+                      className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-medium text-xs outline-none"
+                    >
+                      <option value="">-- Выберите товар --</option>
+                      {stock.map(s => {
+                        const nom = nomenclature.find(n => n.sku === s.sku) || {};
+                        return (
+                          <option key={s.sku + '-' + s.place} value={s.sku}>
+                            {nom.name || s.name || s.sku} [{s.sku}] • {s.place} ({s.available || s.quantity} шт.) — {nom.price || s.price} ₽
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Количество (шт.):</label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPosQty(prev => Math.max(1, prev - 1))}
+                          className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 font-bold"
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          value={posQty}
+                          onChange={e => setPosQty(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full text-center border border-slate-200 rounded-lg py-1.5 font-bold"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPosQty(prev => prev + 1)}
+                          className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 font-bold"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Цена за шт. (₽):</label>
+                      <input
+                        type="number"
+                        value={posPrice}
+                        onChange={e => setPosPrice(Number(e.target.value) || 0)}
+                        className="w-full border border-slate-200 rounded-lg p-1.5 font-bold text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Локация:</label>
+                      <select
+                        value={posPlace}
+                        onChange={e => setPosPlace(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg p-2 bg-white text-xs"
+                      >
+                        <option value="Рейл 1">Рейл 1</option>
+                        <option value="Рейл 2">Рейл 2</option>
+                        <option value="Рейл 3">Рейл 3</option>
+                        <option value="Полка 1">Полка 1</option>
+                        <option value="Корнер 1">Корнер 1</option>
+                        <option value="Склад">Склад</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Оплата:</label>
+                      <select
+                        value={posPaymentType}
+                        onChange={e => setPosPaymentType(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg p-2 bg-white text-xs"
+                      >
+                        <option value="Терминал / Карта">Терминал / Карта</option>
+                        <option value="СБП / QR-код">СБП / QR-код</option>
+                        <option value="Наличные">Наличные</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex justify-between items-center font-bold">
+                    <span className="text-slate-700">Итоговая сумма:</span>
+                    <span className="text-sm text-emerald-700">{(posQty * posPrice).toLocaleString('ru-RU')} ₽</span>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsPosModalOpen(false)}
+                      className="w-1/3 py-2.5 border border-slate-200 text-slate-600 rounded-xl font-semibold hover:bg-slate-50 transition"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!posSelectedItem || isSubmittingPos}
+                      onClick={() => handleExecutePosOperation({
+                        type: posActionType,
+                        item: posSelectedItem,
+                        qty: posQty,
+                        price: posPrice,
+                        place: posPlace,
+                        paymentType: posPaymentType,
+                        notes: posNotes
+                      })}
+                      className="w-2/3 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition shadow-xs disabled:opacity-40"
+                    >
+                      {isSubmittingPos ? 'Проведение...' : `Подтвердить ${(posQty * posPrice).toLocaleString('ru-RU')} ₽`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА 2: ПРИЕМКА ПОСТАВКИ (EXCEL) */}
+          {isShipmentModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+              <div className="bg-white rounded-2xl w-full max-w-lg p-5 space-y-4 text-xs shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900">📥 Приемка поставки (Excel)</h3>
+                    <p className="text-[11px] text-slate-400">Оприходование позиций по накладной</p>
+                  </div>
+                  <button
+                    onClick={() => { setIsShipmentModalOpen(false); setParsedShipmentItems([]); }}
+                    className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Бренд-отправитель *</label>
+                      <select
+                        value={shipmentBrandId}
+                        onChange={e => setShipmentBrandId(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl p-2 bg-white font-semibold text-xs"
+                      >
+                        <option value="">-- Выберите бренд --</option>
+                        {brands.map(b => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Размещение в зале *</label>
+                      <select
+                        value={shipmentPlace}
+                        onChange={e => setShipmentPlace(e.target.value)}
+                        className="w-full border border-slate-200 rounded-xl p-2 bg-white font-semibold text-xs"
+                      >
+                        <option value="Рейл 1">Рейл 1</option>
+                        <option value="Рейл 2">Рейл 2</option>
+                        <option value="Рейл 3">Рейл 3</option>
+                        <option value="Полка 1">Полка 1</option>
+                        <option value="Корнер 1">Корнер 1</option>
+                        <option value="Склад">Склад</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 text-center bg-slate-50/50 space-y-2">
+                    <div className="text-2xl">📊</div>
+                    <div className="font-bold text-slate-800">Выберите файл накладной Excel</div>
+                    <p className="text-[11px] text-slate-500">.xlsx, .xls или .csv</p>
+                    <div className="flex items-center justify-center gap-2 pt-1">
+                      <label className="px-3 py-1.5 bg-slate-900 text-white rounded-lg font-bold cursor-pointer text-xs">
+                        <span>Выбрать файл</span>
+                        <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelFileSelect} className="hidden" />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleDownloadExcelTemplate}
+                        className="px-3 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-semibold text-xs"
+                      >
+                        Шаблон
+                      </button>
+                    </div>
+                  </div>
+
+                  {parsedShipmentItems.length > 0 && (
+                    <div className="space-y-2 border border-slate-200 rounded-xl p-3 bg-slate-50">
+                      <div className="font-bold text-slate-900 text-xs flex justify-between items-center">
+                        <span>Распознано: {parsedShipmentItems.length} позиций</span>
+                        <span className="text-emerald-700">+{parsedShipmentItems.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)} шт.</span>
+                      </div>
+                      <div className="max-h-40 overflow-y-auto divide-y divide-slate-200 text-[11px]">
+                        {parsedShipmentItems.map((it, idx) => (
+                          <div key={idx} className="py-1 flex justify-between">
+                            <span className="font-medium text-slate-800">{it.sku} • {it.name}</span>
+                            <span className="font-bold text-slate-900">{it.quantity} шт. × {it.price} ₽</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => { setIsShipmentModalOpen(false); setParsedShipmentItems([]); }}
+                      className="w-1/3 py-2.5 border border-slate-200 text-slate-600 rounded-xl font-semibold hover:bg-slate-50 transition"
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      disabled={parsedShipmentItems.length === 0 || isSubmittingShipment}
+                      onClick={handleSubmitShipment}
+                      className="w-2/3 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition shadow-xs disabled:opacity-40"
+                    >
+                      {isSubmittingShipment ? 'Приемка...' : 'Принять на склад'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА 3: COMMERCEML / TILDA */}
+          {isCommerceMLModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+              <div className="bg-white rounded-2xl w-full max-w-lg p-5 space-y-4 text-xs shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900">🌐 Синхронизация с сайтом (CommerceML)</h3>
+                    <p className="text-[11px] text-slate-400">Автоматический экспорт товаров и остатков в Tilda / 1C / МойСклад</p>
+                  </div>
+                  <button
+                    onClick={() => setIsCommerceMLModalOpen(false)}
+                    className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center text-xs font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3.5">
+                  <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-sky-900 text-[11px] leading-relaxed">
+                    <div className="font-bold mb-1">📖 Как настроить автообновление в Тильде:</div>
+                    1. Перейдите в: <strong>Настройки сайта → Каталог товаров → Импорт 1C / CommerceML</strong>.<br />
+                    2. Скопируйте одну из ссылок ниже и вставьте в настройки обмена Тильды.<br />
+                    3. Тильда будет автоматически забирать актуальные товары, цены и остатки из шоурума!
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Каталог товаров (import.xml):</label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={`${gasUrl}?action=cml&type=catalog${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-mono text-[10px] text-slate-700 select-all"
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${gasUrl}?action=cml&type=catalog${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`);
+                          showToast('Ссылка на каталог import.xml скопирована!');
+                        }}
+                        className="px-3 py-2 bg-slate-900 text-white rounded-lg font-bold shrink-0 hover:bg-slate-800 transition"
+                      >
+                        Копировать
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Предложения и остатки (offers.xml):</label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={`${gasUrl}?action=cml&type=offers${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-mono text-[10px] text-slate-700 select-all"
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${gasUrl}?action=cml&type=offers${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`);
+                          showToast('Ссылка на остатки offers.xml скопирована!');
+                        }}
+                        className="px-3 py-2 bg-slate-900 text-white rounded-lg font-bold shrink-0 hover:bg-slate-800 transition"
+                      >
+                        Копировать
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Полная выгрузка всё-в-одном (all.xml):</label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={`${gasUrl}?action=cml&type=all${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 font-mono text-[10px] text-slate-700 select-all"
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${gasUrl}?action=cml&type=all${effectiveBrandObj ? '&brandId=' + effectiveBrandObj.id : ''}`);
+                          showToast('Ссылка на полный CML фид скопирована!');
+                        }}
+                        className="px-3 py-2 bg-indigo-600 text-white rounded-lg font-bold shrink-0 hover:bg-indigo-700 transition"
+                      >
+                        Копировать
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setIsCommerceMLModalOpen(false)}
+                      className="w-full py-2.5 border border-slate-200 text-slate-700 rounded-xl font-bold hover:bg-slate-50 transition"
+                    >
+                      Закрыть
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
