@@ -2,13 +2,17 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Bridge Daemon for Antigravity.
-Provides two-way interaction between Antigravity chat session and Telegram Bot.
+Provides two-way interaction between Antigravity chat session and Telegram Bot:
 - Remote task creation (text & voice via Gemini Flash STT)
 - Remote command approval with Telegram inline buttons
-- Completion notifications without lengthy reports
+- Task completion notifications with concise 1-sentence (10-20 words) summaries
+- Automatic .md plan attachment if /plan was requested
+- Live Antigravity connection status bar in a pinned message (updated every 45 sec)
 - Strict security gate (@tvoyaddoma, +79266011608)
 Zero external dependencies (pure standard library: urllib, http.server, threading, json, subprocess).
 """
+
+from __future__ import annotations
 
 import os
 import sys
@@ -17,6 +21,9 @@ import time
 import uuid
 import threading
 import subprocess
+import re
+import socket
+import datetime
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -36,7 +43,7 @@ CONFIG_FILE = os.path.join(CURRENT_DIR, "config.json")
 PENDING_APPROVALS = {}
 APPROVALS_LOCK = threading.Lock()
 
-def load_config():
+def load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -47,7 +54,8 @@ def load_config():
         "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         "allowed_username": "tvoyaddoma",
         "allowed_phone": "79266011608",
-        "allowed_chat_id": None,
+        "allowed_chat_id": 275899743,
+        "status_message_id": None,
         "conversation_id": "e942a502-2c31-4a43-9392-a2b04b0a99ba",
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": "gemini-3.5-flash-lite",
@@ -55,7 +63,7 @@ def load_config():
         "agentapi_path": "/Applications/Gemini.app/Contents/Helpers/agy"
     }
 
-def save_config(cfg):
+def save_config(cfg: dict):
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -63,6 +71,10 @@ def save_config(cfg):
         print(f"[Config] Error saving {CONFIG_FILE}: {e}", file=sys.stderr)
 
 CONFIG = load_config()
+
+def escape_html(text: str) -> str:
+    """Escapes special characters for Telegram HTML mode."""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 # --- TELEGRAM API HELPERS ---
 
@@ -82,11 +94,21 @@ def tg_api_call(method: str, params: dict = None) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=client_timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            err_json = json.loads(err_body)
+            desc = err_json.get("description", str(e))
+            if "message is not modified" in desc.lower():
+                return {"ok": True, "result": True}
+            return {"ok": False, "error": desc, "error_code": e.code}
+        except Exception:
+            return {"ok": False, "error": str(e), "error_code": e.code}
     except urllib.error.URLError as e:
         err_str = str(e).lower()
         if "timed out" in err_str or "eof occurred" in err_str:
             return {"ok": True, "result": []}
-        print(f"[Telegram Poller] Network reconnect: {e}", file=sys.stderr)
+        print(f"[Telegram Network Error] {method}: {e}", file=sys.stderr)
         return {"ok": False, "error": str(e)}
     except Exception as e:
         err_str = str(e).lower()
@@ -116,7 +138,7 @@ def tg_answer_callback(callback_query_id: str, text: str = ""):
         "text": text
     })
 
-def tg_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup: dict = None):
+def tg_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup: dict = None) -> dict:
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -125,10 +147,242 @@ def tg_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup:
     }
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
-    tg_api_call("editMessageText", payload)
+    return tg_api_call("editMessageText", payload)
+
+def tg_pin_chat_message(chat_id: int, message_id: int, disable_notification: bool = True) -> dict:
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "disable_notification": disable_notification
+    }
+    return tg_api_call("pinChatMessage", payload)
+
+def tg_send_document(chat_id: int, file_path: str, caption: str = "") -> dict:
+    """Sends a local document (e.g. .md plan) via multipart/form-data."""
+    bot_token = CONFIG.get("bot_token")
+    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    boundary = f"----FormBoundary{uuid.uuid4().hex}"
+    
+    if not os.path.exists(file_path):
+        return {"ok": False, "error": f"File not found: {file_path}"}
+        
+    filename = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+        
+    lines = []
+    lines.append(f"--{boundary}".encode("utf-8"))
+    lines.append(b'Content-Disposition: form-data; name="chat_id"')
+    lines.append(b"")
+    lines.append(str(chat_id).encode("utf-8"))
+    
+    if caption:
+        lines.append(f"--{boundary}".encode("utf-8"))
+        lines.append(b'Content-Disposition: form-data; name="caption"')
+        lines.append(b"")
+        lines.append(caption.encode("utf-8"))
+        lines.append(f"--{boundary}".encode("utf-8"))
+        lines.append(b'Content-Disposition: form-data; name="parse_mode"')
+        lines.append(b"")
+        lines.append(b"HTML")
+        
+    lines.append(f"--{boundary}".encode("utf-8"))
+    lines.append(f'Content-Disposition: form-data; name="document"; filename="{filename}"'.encode("utf-8"))
+    lines.append(b"Content-Type: text/markdown; charset=utf-8")
+    lines.append(b"")
+    lines.append(file_bytes)
+    lines.append(f"--{boundary}--".encode("utf-8"))
+    lines.append(b"")
+    
+    body = b"\r\n".join(lines)
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body))
+    }
+    req = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            return json.loads(err_body)
+        except Exception:
+            return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 def tg_send_chat_action(chat_id: int, action: str = "typing"):
     tg_api_call("sendChatAction", {"chat_id": chat_id, "action": action})
+
+# --- TASK SUMMARY GENERATOR ---
+
+def generate_task_summary(user_text: str, assistant_text: str, api_key: str, model_name: str = "gemini-3.5-flash-lite") -> str:
+    """
+    Generates a concise 1-sentence (10-20 words) Russian summary of completed work.
+    Strictly focuses on what was done without lengthy explanations.
+    """
+    if not api_key:
+        return _fallback_summary(assistant_text, user_text)
+
+    prompt = (
+        "Сформируй краткое описание проделанной работы для Telegram-уведомления.\n"
+        "Требования:\n"
+        "1. СТРОГО ОДНО предложение.\n"
+        "2. Длина: от 10 до 20 слов.\n"
+        "3. Язык: русский.\n"
+        "4. Сразу передавай суть того, что сделано (без вводных слов вроде 'В ходе задачи...', 'Я успешно...', 'Было выполнено...').\n\n"
+        f"Запрос пользователя:\n{user_text[:600]}\n\n"
+        f"Результат работы:\n{assistant_text[:1200]}"
+    )
+
+    candidate_models = [
+        model_name,
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-flash-latest"
+    ]
+    models_to_try = []
+    for cand in candidate_models:
+        if cand and cand not in models_to_try:
+            models_to_try.append(cand)
+
+    for m in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        data_json = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data_json, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                res_body = json.loads(resp.read().decode("utf-8"))
+                candidates = res_body.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    texts = [p.get("text", "") for p in parts if "text" in p]
+                    summary = "".join(texts).strip()
+                    if summary:
+                        summary = summary.replace("\n", " ").replace('"', '').strip()
+                        return summary
+        except Exception as e:
+            print(f"[Summary Generation] Error with {m}: {e}", file=sys.stderr)
+            continue
+
+    return _fallback_summary(assistant_text, user_text)
+
+def _fallback_summary(assistant_text: str, user_text: str) -> str:
+    """Fallback 1-sentence extraction if AI summary fails."""
+    if assistant_text:
+        lines = [l.strip() for l in assistant_text.splitlines() if l.strip() and not l.strip().startswith(("#", "```", "---"))]
+        for line in lines:
+            clean = re.sub(r"[*_`#]", "", line).strip()
+            if len(clean) > 15:
+                sentences = re.split(r"[.!?]\s+", clean)
+                if sentences and len(sentences[0]) > 10:
+                    return sentences[0].strip().rstrip(".!?") + "."
+    if user_text:
+        clean_u = re.sub(r"[*_`#]", "", user_text).strip()
+        words = clean_u.split()
+        if len(words) <= 20:
+            return f"Выполнено: {clean_u}"
+        return f"Выполнено: {' '.join(words[:18])}..."
+    return "Задача успешно выполнена, все действия завершены."
+
+# --- ANTIGRAVITY STATUS & LAPTOP POWER ---
+
+def get_antigravity_status() -> tuple[bool, int]:
+    """Checks if Antigravity / agy process is alive and its hub socket is responding."""
+    try:
+        out = subprocess.check_output(["ps", "aux"], text=True)
+        m = re.search(r"--hub-port=(\d+)", out)
+        if m:
+            port = int(m.group(1))
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            err = s.connect_ex(("127.0.0.1", port))
+            s.close()
+            if err == 0:
+                return True, port
+            return False, port
+    except Exception:
+        pass
+    return False, 0
+
+def get_laptop_power_status() -> str:
+    """Gets power source and battery percentage on macOS via pmset."""
+    try:
+        out = subprocess.check_output(["pmset", "-g", "batt"], text=True)
+        is_ac = "AC Power" in out
+        pct_match = re.search(r"(\d+)%", out)
+        pct = f"{pct_match.group(1)}%" if pct_match else ""
+        if is_ac:
+            return f"🔌 Питание от сети ({pct})" if pct else "🔌 Питание от сети"
+        else:
+            return f"🔋 Батарея ({pct})" if pct else "🔋 Батарея"
+    except Exception:
+        return "💻 Ноутбук активен"
+
+# --- STATUS BAR HEARTBEAT THREAD ---
+
+def status_heartbeat_loop():
+    """Periodically (every 45 sec) updates the pinned status bar in Telegram."""
+    print("[Status Bar] Starting connection heartbeat loop (45s)...", flush=True)
+    time.sleep(3)  # initial brief warm-up
+    
+    while True:
+        try:
+            chat_id = CONFIG.get("allowed_chat_id")
+            if not chat_id:
+                time.sleep(5)
+                continue
+                
+            is_online, port = get_antigravity_status()
+            power_info = get_laptop_power_status()
+            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            
+            if is_online:
+                status_text = (
+                    "🟢 <b>Статус-бар: Antigravity в сети (Online)</b>\n\n"
+                    f"💻 <b>Ноутбук:</b> {power_info}\n"
+                    f"📡 <b>Связь:</b> Активна (порт {port})\n"
+                    f"⏱ <b>Пинг:</b> {now_str} • Каждые 45 сек\n\n"
+                    "<i>💡 Если время не обновляется &gt;1 мин — ноутбук выключен, спит или потеряна связь.</i>"
+                )
+            else:
+                status_text = (
+                    "🟡 <b>Статус-бар: Ожидание Antigravity</b>\n\n"
+                    f"💻 <b>Ноутбук:</b> {power_info} • Antigravity не отвечает\n"
+                    f"⏱ <b>Пинг:</b> {now_str} • Каждые 45 сек\n\n"
+                    "<i>💡 Процесс Antigravity перезапускается или закрыт.</i>"
+                )
+                
+            msg_id = CONFIG.get("status_message_id")
+            need_new_message = False
+            
+            if msg_id:
+                res = tg_edit_message_text(chat_id, msg_id, status_text)
+                if not res.get("ok"):
+                    err = str(res.get("error", ""))
+                    if "message is not modified" in err:
+                        pass
+                    elif "message to edit not found" in err or "chat not found" in err:
+                        need_new_message = True
+            else:
+                need_new_message = True
+                
+            if need_new_message:
+                send_res = tg_send_message(chat_id, status_text)
+                if send_res.get("ok"):
+                    new_id = send_res["result"]["message_id"]
+                    CONFIG["status_message_id"] = new_id
+                    save_config(CONFIG)
+                    tg_pin_chat_message(chat_id, new_id, disable_notification=True)
+                    print(f"[Status Bar] Created and pinned new status message #{new_id}", flush=True)
+                    
+        except Exception as e:
+            print(f"[Status Bar Error] {e}", file=sys.stderr)
+            
+        time.sleep(45)
 
 # --- ANTIGRAVITY AGENTAPI INTEGRATION ---
 
@@ -137,13 +391,11 @@ SESSION_FILE = os.path.join(CURRENT_DIR, "session.json")
 def get_agent_env() -> dict:
     env = os.environ.copy()
     
-    # 1. From in-memory config if synced
     if CONFIG.get("ls_address"):
         env["ANTIGRAVITY_LS_ADDRESS"] = CONFIG["ls_address"]
     if CONFIG.get("csrf_token"):
         env["ANTIGRAVITY_CSRF_TOKEN"] = CONFIG["csrf_token"]
         
-    # 2. From session.json
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
@@ -155,11 +407,9 @@ def get_agent_env() -> dict:
         except Exception as e:
             print(f"[Session] Error reading {SESSION_FILE}: {e}", file=sys.stderr)
             
-    # 3. Fallback: auto-detect hub-port from running agy process
     if "ANTIGRAVITY_LS_ADDRESS" not in env:
         try:
             out = subprocess.check_output(["ps", "aux"], text=True)
-            import re
             m = re.search(r"--hub-port=(\d+)", out)
             if m:
                 env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{m.group(1)}"
@@ -199,11 +449,9 @@ def is_authorized(user_obj: dict) -> bool:
     allowed_u = CONFIG.get("allowed_username", "tvoyaddoma").lower().lstrip("@")
     allowed_id = CONFIG.get("allowed_chat_id")
     
-    # 1. Matches already bound chat_id
     if allowed_id and uid == allowed_id:
         return True
     
-    # 2. Matches username: bind chat_id
     if username == allowed_u:
         CONFIG["allowed_chat_id"] = uid
         save_config(CONFIG)
@@ -215,7 +463,6 @@ def is_authorized(user_obj: dict) -> bool:
 # --- TELEGRAM UPDATES HANDLER ---
 
 def process_telegram_update(update: dict):
-    # 1. Handle Callback Queries (inline button clicks for approvals)
     if "callback_query" in update:
         cb = update["callback_query"]
         sender = cb.get("from", {})
@@ -257,15 +504,12 @@ def process_telegram_update(update: dict):
                     tg_answer_callback(cb["id"], "Срок действия запроса истек")
         return
 
-    # 2. Handle Messages
     if "message" in update:
         msg = update["message"]
         sender = msg.get("from", {})
         chat_id = msg.get("chat", {}).get("id")
         
-        # Check authorization
         if not is_authorized(sender):
-            # Check if contact with allowed phone was shared
             if "contact" in msg:
                 phone = str(msg["contact"].get("phone_number", "")).replace("+", "").replace(" ", "")
                 allowed_p = CONFIG.get("allowed_phone", "79266011608")
@@ -278,7 +522,6 @@ def process_telegram_update(update: dict):
             tg_send_message(chat_id, "⛔️ <b>Доступ ограничен.</b>\nЭтот бот предназначен для приватного управления сессией Antigravity владельцем @tvoyaddoma.")
             return
 
-        # /start or /help
         text = msg.get("text", "").strip()
         if text.startswith("/start") or text.startswith("/help"):
             tg_send_message(
@@ -289,11 +532,12 @@ def process_telegram_update(update: dict):
                 "• 📝 <b>Текстовые задачи:</b> напишите задачу сюда, и она сразу появится в чате Antigravity.\n"
                 "• 🎙 <b>Голосовые заметки:</b> отправьте голосовое — Gemini Flash мгновенно распознает речь и передаст задачу.\n"
                 "• ⚡️ <b>Удаленные подтверждения:</b> при запуске команд бот пришлет кнопки подтверждения прямо на телефон.\n"
-                "• 🏁 <b>Уведомление о готовности:</b> когда задача будет выполнена, вы получите короткий сигнал."
+                "• 🏁 <b>Уведомление о готовности:</b> краткая сводка (10-20 слов) по завершении каждого шага.\n"
+                "• 📄 <b>Планы задач:</b> если в запросе был /plan, готовый .md файл сразу прикрепится к сообщению.\n"
+                "• 📌 <b>Статус-бар:</b> закрепленное сообщение показывает реальное состояние подключения ноутбука каждые 45 сек."
             )
             return
 
-        # Voice message
         if "voice" in msg or "audio" in msg:
             voice = msg.get("voice") or msg.get("audio")
             file_id = voice.get("file_id")
@@ -317,7 +561,6 @@ def process_telegram_update(update: dict):
                 tg_send_message(chat_id, f"⚠️ Ошибка транскрипции: {e}")
             return
 
-        # Plain text task
         if text:
             tg_send_message(chat_id, "📥 <i>Задача принята и передана в Antigravity...</i>")
             send_to_antigravity(f"Задача от владельца (@tvoyaddoma): {text}")
@@ -345,11 +588,46 @@ def telegram_poller_loop():
             print(f"[Poller Loop Exception] {e}", file=sys.stderr)
             time.sleep(5)
 
+# --- NOTIFICATION DISPATCHER ---
+
+def handle_notify_finished_async(chat_id: int, payload: dict):
+    """Processes task completion notification asynchronously."""
+    try:
+        user_req = payload.get("user_request", "")
+        asst_resp = payload.get("assistant_response", "")
+        plan_path = payload.get("plan_path")
+        
+        api_key = CONFIG.get("gemini_api_key", "")
+        model_name = CONFIG.get("gemini_model", "gemini-3.5-flash-lite")
+        
+        # 1. Generate short 1-sentence (10-20 words) summary
+        summary = generate_task_summary(user_req, asst_resp, api_key, model_name)
+        
+        # 2. Build message text
+        full_text = (
+            "🏁 <b>Antigravity: Задача выполнена!</b>\n\n"
+            f"📝 <i>{escape_html(summary)}</i>"
+        )
+        
+        # 3. If plan requested and file exists: attach as document
+        if plan_path and os.path.exists(plan_path):
+            doc_res = tg_send_document(chat_id, plan_path, caption=full_text)
+            if not doc_res.get("ok"):
+                # Fallback: send text then document
+                tg_send_message(chat_id, full_text)
+                tg_send_document(chat_id, plan_path)
+            print(f"[Notifier] Sent completion notification with plan {os.path.basename(plan_path)}", flush=True)
+        else:
+            tg_send_message(chat_id, full_text)
+            print(f"[Notifier] Sent completion notification without document", flush=True)
+            
+    except Exception as e:
+        print(f"[Notifier Error] {e}", file=sys.stderr)
+
 # --- LOCAL IPC HTTP SERVER FOR ANTIGRAVITY HOOKS ---
 
 class LocalIPCHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Quiet standard logging
         pass
 
     def do_GET(self):
@@ -372,11 +650,9 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
         if path == "/request-approval":
             cmd = payload.get("command", "")
             action = payload.get("action", "run_command")
-            reason = payload.get("reason", "Запрос подтверждения действия")
             
             chat_id = CONFIG.get("allowed_chat_id")
             if not chat_id:
-                # If chat_id not bound yet, allow fallback to computer UI
                 self._send_json({"decision": "ask", "reason": "Chat ID not registered in Telegram bridge"})
                 return
 
@@ -401,13 +677,12 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
 
             msg_text = (
                 f"⚠️ <b>Запрос подтверждения Antigravity</b>\n\n"
-                f"<b>Действие:</b> {action}\n"
-                f"<b>Команда:</b>\n<code>{cmd}</code>\n\n"
+                f"<b>Действие:</b> {escape_html(action)}\n"
+                f"<b>Команда:</b>\n<code>{escape_html(cmd)}</code>\n\n"
                 f"<i>Нажмите кнопку для ответа с телефона:</i>"
             )
             tg_send_message(chat_id, msg_text, reply_markup=keyboard)
 
-            # Wait for user click in Telegram (up to 90 seconds)
             timeout = CONFIG.get("approval_timeout_sec", 90)
             got_response = evt.wait(timeout=timeout)
 
@@ -422,11 +697,11 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
         elif path == "/notify-finished":
             chat_id = CONFIG.get("allowed_chat_id")
             if chat_id:
-                tg_send_message(
-                    chat_id,
-                    "🏁 <b>Antigravity: Задача успешно выполнена!</b>\n"
-                    "Все действия завершены."
-                )
+                threading.Thread(
+                    target=handle_notify_finished_async,
+                    args=(chat_id, payload),
+                    daemon=True
+                ).start()
             self._send_json({"success": True})
             return
 
@@ -468,13 +743,18 @@ def main():
     print(f"  Authorized User: @{CONFIG.get('allowed_username')}", flush=True)
     print(f"  STT Model: {CONFIG.get('gemini_model')}", flush=True)
     print(f"  Conversation ID: {CONFIG.get('conversation_id')}", flush=True)
+    print(f"  Status Bar Message ID: {CONFIG.get('status_message_id')}", flush=True)
     print("==================================================", flush=True)
 
     # Thread 1: Telegram long poller
     poller_t = threading.Thread(target=telegram_poller_loop, daemon=True)
     poller_t.start()
 
-    # Thread 2 (Main): Local IPC server
+    # Thread 2: Pinned status bar heartbeat loop (every 45s)
+    status_t = threading.Thread(target=status_heartbeat_loop, daemon=True)
+    status_t.start()
+
+    # Thread 3 (Main): Local IPC server
     try:
         start_ipc_server()
     except KeyboardInterrupt:
