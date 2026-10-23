@@ -41,7 +41,10 @@ var BRAND_HEADERS = [
   "lastContact",
   "notes",
   "updatedAt",
-  "assignedPlaces"
+  "assignedPlaces",
+  "currentStockCount",
+  "maxStockCapacity",
+  "lastDeliveryDate"
 ];
 
 var ACL_HEADERS = [
@@ -271,6 +274,12 @@ function readSheetData(sheet, headers) {
       }
       if (obj.paymentDay !== undefined && obj.paymentDay !== "") {
         obj.paymentDay = Number(obj.paymentDay) || 10;
+      }
+      if (obj.currentStockCount !== undefined && obj.currentStockCount !== "") {
+        obj.currentStockCount = Number(obj.currentStockCount) || 0;
+      }
+      if (obj.maxStockCapacity !== undefined && obj.maxStockCapacity !== "") {
+        obj.maxStockCapacity = Number(obj.maxStockCapacity) || 0;
       }
       if (obj.immutable !== undefined) {
         obj.immutable = String(obj.immutable).toLowerCase() === "true" || obj.immutable === true;

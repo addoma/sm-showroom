@@ -356,6 +356,141 @@
       return 'pending';
     }
 
+    function getStockInfo(brand) {
+      const current = Number(brand?.currentStockCount) || 0;
+      let max = Number(brand?.maxStockCapacity) || 0;
+      if (!max) {
+        const places = String(brand?.assignedPlaces || '');
+        if (places.includes('Корнер')) max = 70;
+        else if (places.includes('Полка')) max = 12;
+        else if (places.includes('Стойка')) max = 25;
+        else if (places.includes('1/2')) max = 20;
+        else max = 38;
+      }
+      const pct = max > 0 ? Math.round((current / max) * 100) : 0;
+      let status = 'optimum';
+      let color = 'text-emerald-700 bg-emerald-50 border-emerald-200';
+      let label = 'Оптимум';
+      if (pct < 50) {
+        status = 'low';
+        color = 'text-amber-700 bg-amber-50 border-amber-200';
+        label = 'Полупустой';
+      } else if (pct > 95) {
+        status = 'overflow';
+        color = 'text-rose-700 bg-rose-50 border-rose-200';
+        label = 'Переполнен';
+      }
+      return { current, max, pct, status, color, label };
+    }
+
+    function getFreshnessInfo(brand) {
+      if (!brand?.lastDeliveryDate) {
+        return { days: null, status: 'unknown', color: 'text-slate-500 bg-slate-50 border-slate-200', label: 'Нет данных' };
+      }
+      const date = new Date(brand.lastDeliveryDate);
+      if (isNaN(date.getTime())) {
+        return { days: null, status: 'unknown', color: 'text-slate-500 bg-slate-50 border-slate-200', label: 'Нет данных' };
+      }
+      const now = new Date();
+      const diffTime = now.getTime() - date.getTime();
+      const days = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
+      
+      if (days <= 14) {
+        return { days, status: 'fresh', color: 'text-emerald-700 bg-emerald-50 border-emerald-200', label: `Свежая (${days} дн)` };
+      } else if (days <= 30) {
+        return { days, status: 'stable', color: 'text-sky-700 bg-sky-50 border-sky-200', label: `Стабильно (${days} дн)` };
+      } else {
+        return { days, status: 'rotation_needed', color: 'text-rose-700 bg-rose-50 border-rose-200', label: `Ротация! (${days} дн)` };
+      }
+    }
+
+    function exportFinanceCsv(brands, financeStats, monthKey) {
+      const headers = [
+        "Бренд",
+        "Категория",
+        "Стадия",
+        "Закрепленные места",
+        "Арендная ставка (₽)",
+        "Комиссия (%)",
+        "Статус оплаты",
+        "День оплаты",
+        "Остаток в зале (шт)",
+        "Вместимость (норма)",
+        "Плотность выкладки (%)",
+        "Дата последней поставки",
+        "Дней без ротации",
+        "Контактное лицо",
+        "Telegram",
+        "Телефон"
+      ];
+
+      const rows = (brands || []).map(b => {
+        const stock = getStockInfo(b);
+        const fresh = getFreshnessInfo(b);
+        const isPaid = b.paidMonth === monthKey;
+        const statusStr = b.stage !== 'active' ? 'Не в зале' : (isPaid ? 'Оплачено' : (isBrandOverdue(b) ? 'Просрочено' : 'Ожидает оплаты'));
+
+        return [
+          `"${(b.name || '').replace(/"/g, '""')}"`,
+          `"${(b.category || '').replace(/"/g, '""')}"`,
+          `"${STAGES.find(s => s.id === b.stage)?.title || b.stage}"`,
+          `"${(b.assignedPlaces || '').replace(/"/g, '""')}"`,
+          Number(b.monthlyFee) || 0,
+          `"${b.commission || '25%'}"`,
+          `"${statusStr}"`,
+          Number(b.paymentDay) || 1,
+          stock.current,
+          stock.max,
+          `${stock.pct}%`,
+          b.lastDeliveryDate || '',
+          fresh.days !== null ? fresh.days : '',
+          `"${(b.contactName || '').replace(/"/g, '""')}"`,
+          `"${b.tgUsername ? '@' + b.tgUsername.replace('@', '') : ''}"`,
+          `"${b.phone || ''}"`
+        ].join(';');
+      });
+
+      const csvContent = "\uFEFF" + [headers.join(';'), ...rows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `showroom_report_${monthKey || 'export'}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    function shareFinanceTelegram(brands, financeStats, monthKey, turnoverEst = 1500000) {
+      const activeCount = financeStats.activeBrands.length;
+      const mrr = financeStats.plannedRevenue.toLocaleString('ru-RU');
+      const paid = financeStats.receivedRevenue.toLocaleString('ru-RU');
+      const overdue = financeStats.overdueRevenue.toLocaleString('ru-RU');
+      const avgCheck = financeStats.avgMonthlyFee.toLocaleString('ru-RU');
+      const occPct = financeStats.showroomOccupancy.railsPct;
+      const estComm = Math.round((turnoverEst * financeStats.avgCommissionRate) / 100).toLocaleString('ru-RU');
+      const totalIncome = (financeStats.plannedRevenue + Math.round((turnoverEst * financeStats.avgCommissionRate) / 100)).toLocaleString('ru-RU');
+
+      const text = `📊 Сводка Showroom CRM (${monthKey || 'Текущий месяц'}):\n\n` +
+        `🏬 Арендный фонд (MRR): ${mrr} ₽\n` +
+        `✅ Собрано оплат: ${paid} ₽ (${financeStats.paidBrands.length}/${activeCount} резидентов)\n` +
+        (financeStats.overdueBrands.length > 0 ? `🚨 Просрочено: ${overdue} ₽ (${financeStats.overdueBrands.length} брендов)\n` : '') +
+        `💳 Средний чек аренды: ${avgCheck} ₽\n` +
+        `👗 Загрузка рейлов: ${occPct}% (${financeStats.showroomOccupancy.occupiedRailsFraction}/${financeStats.showroomOccupancy.totalRails})\n` +
+        `💰 Прогноз комиссии (${Math.round(financeStats.avgCommissionRate)}%): ~${estComm} ₽\n` +
+        `✨ Итого прогноз доходов: ~${totalIncome} ₽\n\n` +
+        (financeStats.rotationAlertsCount > 0 ? `⚠️ Брендов на ротацию (>30 дн): ${financeStats.rotationAlertsCount}\n` : '') +
+        `📦 Товара в зале: ${financeStats.totalStockCount} шт (плотность: ${financeStats.overallDensityPct}%)`;
+
+      if (window.Telegram?.WebApp?.openTelegramLink) {
+        window.Telegram.WebApp.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(text)}`);
+      } else {
+        navigator.clipboard.writeText(text);
+        alert('Сводка скопирована в буфер обмена:\n\n' + text);
+      }
+    }
+
     const getCurrentMonthKey = () => {
       const now = new Date();
       return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -538,7 +673,10 @@
         paymentDay: 15,
         paidMonth: '',
         lastContact: '2026-10-15',
-        notes: 'Заинтересованы в размещении осенней капсулы. Ждут фото нашего зала.'
+        notes: 'Заинтересованы в размещении осенней капсулы. Ждут фото нашего зала.',
+        currentStockCount: 65,
+        maxStockCapacity: 80,
+        lastDeliveryDate: '2026-10-10'
       },
       {
         id: 'b-2',
@@ -549,7 +687,7 @@
         tgChatId: '',
         phone: '+79265554433',
         website: 'https://shuclothes.com',
-        stage: 'contract',
+        stage: 'active',
         railFormat: 'Корнер 4 м²',
         assignedPlaces: 'Корнер 1',
         monthlyFee: 45000,
@@ -557,7 +695,10 @@
         paymentDay: 1,
         paidMonth: '',
         lastContact: '2026-10-18',
-        notes: 'Согласовали условия. Отправил шаблон договора, ждем скан с подписью.'
+        notes: 'Согласовали условия. Отправил шаблон договора, ждем скан с подписью.',
+        currentStockCount: 72,
+        maxStockCapacity: 85,
+        lastDeliveryDate: '2026-09-12'
       },
       {
         id: 'b-3',
@@ -576,7 +717,10 @@
         paymentDay: 5,
         paidMonth: '',
         lastContact: '2026-10-19',
-        notes: 'Отправил презентацию шоурума в Телеграм.'
+        notes: 'Отправил презентацию шоурума в Телеграм.',
+        currentStockCount: 18,
+        maxStockCapacity: 20,
+        lastDeliveryDate: '2026-10-14'
       },
       {
         id: 'b-4',
@@ -595,7 +739,10 @@
         paymentDay: 1,
         paidMonth: '',
         lastContact: '2026-10-10',
-        notes: 'Поставка принята. Отлично продаются худи и базовые футболки.'
+        notes: 'Поставка принята. Отлично продаются худи и базовые футболки.',
+        currentStockCount: 42,
+        maxStockCapacity: 45,
+        lastDeliveryDate: '2026-10-18'
       },
       {
         id: 'b-5',
@@ -614,7 +761,10 @@
         paymentDay: 1,
         paidMonth: '',
         lastContact: '2026-10-20',
-        notes: 'Отлично впишутся в концепцию. Подготовить персональный оффер.'
+        notes: 'Отлично впишутся в концепцию. Подготовить персональный оффер.',
+        currentStockCount: 28,
+        maxStockCapacity: 35,
+        lastDeliveryDate: '2026-10-02'
       }
     ];
 
@@ -1012,10 +1162,17 @@
         localStorage.setItem('sm_crm_showroom_config_v1', JSON.stringify(showroomConfig));
       }, [showroomConfig]);
 
-      // Подвкладки в разделе «Финансы & Зал»: 'map' (План зала & Рейлы) | 'calendar' (Календарь оплат) | 'table' (Реестр)
+      // Подвкладки в разделе «Финансы & Зал»: 'map' (План зала) | 'analytics' (Финансы & BI) | 'merchandising' (Мерчандайзинг) | 'calendar' (Календарь оплат) | 'table' (Реестр)
       const [financeSubView, setFinanceSubView] = useState('map');
       // Фильтр зон на плане зала: 'all' | 'rail' | 'shelf' | 'corner' | 'accessory'
       const [mapZoneFilter, setMapZoneFilter] = useState('all');
+
+      // Расчетный ежемесячный оборот продаж шоурума в рублях (для калькулятора комиссии)
+      const [turnoverEstimate, setTurnoverEstimate] = useState(1500000);
+      // Фильтр для реестра мерчандайзинга: 'all' | 'rotation' | 'low' | 'overflow'
+      const [merchFilter, setMerchFilter] = useState('all');
+      // Контролируемая дата поставки для модалки бренда
+      const [modalDeliveryDate, setModalDeliveryDate] = useState('');
 
       // Выбранный месяц и год в Календаре оплат
       const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
@@ -1037,6 +1194,7 @@
         setBrandPlaces(parseAssignedPlaces(brand?.assignedPlaces || ''));
         setIsAddingCustomPlace(false);
         setCustomPlaceInput('');
+        setModalDeliveryDate(brand?.lastDeliveryDate || getTodayDateString());
         setIsModalOpen(true);
       };
 
@@ -1501,7 +1659,12 @@
           setIsMoreMenuOpen(false);
           return;
         }
-        // 2. Если модалок нет, но открыта не главная вкладка — возврат на Канбан
+        // 2. Если внутри раздела «Финансы & Зал» открыт подраздел кроме плана зала
+        if (activeTab === 'finance' && financeSubView !== 'map') {
+          setFinanceSubView('map');
+          return;
+        }
+        // 3. Если модалок нет, но открыта не главная вкладка — возврат на Канбан
         if (activeTab !== 'kanban') {
           setActiveTab('kanban');
           return;
@@ -1516,7 +1679,8 @@
         isMigrationModalOpen,
         isModalOpen,
         isMoreMenuOpen,
-        activeTab
+        activeTab,
+        financeSubView
       ]);
 
       // Синхронизация отображения и клика BackButton в Telegram
@@ -2486,7 +2650,10 @@
           paymentDay: Math.min(31, Math.max(1, Number(fd.get('paymentDay')) || 1)),
           paidMonth: isPaidChecked ? curMonth : '',
           lastContact: getTodayDateString(),
-          notes: fd.get('notes').trim()
+          notes: fd.get('notes').trim(),
+          currentStockCount: Math.max(0, Number(fd.get('currentStockCount')) || 0),
+          maxStockCapacity: Math.max(0, Number(fd.get('maxStockCapacity')) || 0),
+          lastDeliveryDate: (fd.get('lastDeliveryDate') || '').trim() || (editingBrand?.lastDeliveryDate || getTodayDateString())
         };
 
         if (editingBrand) {
@@ -2572,6 +2739,31 @@
         });
       };
 
+      // Быстрая корректировка остатка на рейле/полке
+      const handleAdjustStock = (brandId, delta) => {
+        haptic.light();
+        const brand = brands.find(b => b.id === brandId);
+        if (!brand) return;
+        const current = Math.max(0, (Number(brand.currentStockCount) || 0) + delta);
+        const updated = { ...brand, currentStockCount: current };
+        setBrands(brands.map(b => b.id === brandId ? updated : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updated, 'update'));
+        showToast(`Остаток «${brand.name}»: ${current} шт`);
+      };
+
+      // Быстрая фиксация поставки сегодня
+      const handleQuickRestock = (brandId) => {
+        haptic.success();
+        const brand = brands.find(b => b.id === brandId);
+        if (!brand) return;
+        const todayStr = getTodayDateString();
+        const updated = { ...brand, lastDeliveryDate: todayStr };
+        setBrands(brands.map(b => b.id === brandId ? updated : b));
+        queueCloudSync(() => CloudStorageService.syncBrand(gasUrlRef.current, gasApiKeyRef.current, updated, 'update'));
+        addAuditLog('МЕРЧАНДАЙЗИНГ', `Зафиксирована поставка/ротация для «${brand.name}» (сегодня)`);
+        showToast(`Поставка для «${brand.name}» зафиксирована`);
+      };
+
       const setupBotInTelegram = async () => {
         if (!botToken) return alert('Укажите токен бота');
         try {
@@ -2618,6 +2810,74 @@
         const contractPotential = contractBrands.reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
         const showroomOccupancy = calculateShowroomOccupancy(brands, showroomConfig);
 
+        // Средний чек аренды на 1 активного резидента
+        const avgMonthlyFee = activeBrands.length > 0 ? Math.round(plannedRevenue / activeBrands.length) : 0;
+
+        // Средняя ставка комиссии по резидентам
+        let totalCommissionPct = 0;
+        let countWithCommission = 0;
+        activeBrands.forEach(b => {
+          const num = parseFloat(String(b.commission || '25').replace('%', ''));
+          if (!isNaN(num) && num > 0) {
+            totalCommissionPct += num;
+            countWithCommission++;
+          }
+        });
+        const avgCommissionRate = countWithCommission > 0 ? (totalCommissionPct / countWithCommission) : 25;
+
+        // Распределение выручки по товарным категориям
+        const categoryMap = {};
+        activeBrands.forEach(b => {
+          const rawCat = (b.category || 'Одежда').split('/')[0].trim();
+          if (!categoryMap[rawCat]) {
+            categoryMap[rawCat] = { count: 0, revenue: 0 };
+          }
+          categoryMap[rawCat].count += 1;
+          categoryMap[rawCat].revenue += (Number(b.monthlyFee) || 0);
+        });
+        const categories = Object.keys(categoryMap).map(k => ({
+          name: k,
+          count: categoryMap[k].count,
+          revenue: categoryMap[k].revenue,
+          pct: plannedRevenue > 0 ? Math.round((categoryMap[k].revenue / plannedRevenue) * 100) : 0
+        })).sort((a, b) => b.revenue - a.revenue);
+
+        // Воронка конверсии потенциальных резидентов
+        const funnelOrder = ['lead', 'contacted', 'replied', 'contract', 'active'];
+        const funnelCounts = {};
+        funnelOrder.forEach(st => {
+          funnelCounts[st] = brands.filter(b => b.stage === st).length;
+        });
+        const totalFunnelBrands = brands.length;
+        const rejectedBrands = brands.filter(b => b.stage === 'rejected');
+
+        // Потенциал воронки (Pipeline Value): сумма аренды по стадиям переговоров и договоров
+        const pipelineValue = brands
+          .filter(b => ['replied', 'contract'].includes(b.stage))
+          .reduce((s, b) => s + (Number(b.monthlyFee) || 0), 0);
+
+        // Сквозная конверсия (Лид -> Резидент)
+        const overallConversion = totalFunnelBrands > 0 ? Math.round((funnelCounts['active'] / totalFunnelBrands) * 100) : 0;
+
+        // Показатели мерчандайзинга и склада
+        let totalStockCount = 0;
+        let totalStockCapacity = 0;
+        let rotationAlertsCount = 0;
+        let lowStockCount = 0;
+        let overflowStockCount = 0;
+
+        activeBrands.forEach(b => {
+          const s = getStockInfo(b);
+          const f = getFreshnessInfo(b);
+          totalStockCount += s.current;
+          totalStockCapacity += s.max;
+          if (f.status === 'rotation_needed') rotationAlertsCount++;
+          if (s.status === 'low') lowStockCount++;
+          if (s.status === 'overflow') overflowStockCount++;
+        });
+
+        const overallDensityPct = totalStockCapacity > 0 ? Math.round((totalStockCount / totalStockCapacity) * 100) : 0;
+
         return {
           activeBrands,
           paidBrands,
@@ -2629,7 +2889,21 @@
           pendingRevenue,
           overdueRevenue,
           contractPotential,
-          showroomOccupancy
+          showroomOccupancy,
+          avgMonthlyFee,
+          avgCommissionRate,
+          categories,
+          funnelCounts,
+          totalFunnelBrands,
+          rejectedBrands,
+          pipelineValue,
+          overallConversion,
+          totalStockCount,
+          totalStockCapacity,
+          rotationAlertsCount,
+          lowStockCount,
+          overflowStockCount,
+          overallDensityPct
         };
       }, [brands, showroomConfig]);
 
@@ -3315,9 +3589,32 @@
                                   <div className="min-w-0">
                                     <div className="font-bold text-sm text-slate-900 truncate">{brand.name}</div>
                                     <div className="text-[11px] text-slate-500 truncate">{brand.category}</div>
+                                    {brand.assignedPlaces && (
+                                      <div className="text-[10px] text-sky-700 font-semibold truncate pt-0.5">
+                                        📍 {brand.assignedPlaces}
+                                      </div>
+                                    )}
                                   </div>
                                   <button onClick={() => openBrandModal(brand)} className="text-slate-400 hover:text-slate-700 text-xs p-1 shrink-0" title="Редактировать карточку">✎</button>
                                 </div>
+
+                                {/* МЕРЧАНДАЙЗИНГ И СВЕЖЕСТЬ КОЛЛЕКЦИИ */}
+                                {(() => {
+                                  const stock = getStockInfo(brand);
+                                  const fresh = getFreshnessInfo(brand);
+                                  return (
+                                    <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                                      <span className={`px-1.5 py-0.2 rounded-md font-medium border ${stock.color}`} title={`Вместимость: ${stock.current} из ${stock.max} (${stock.label})`}>
+                                        📦 {stock.current}/{stock.max} ({stock.pct}%)
+                                      </span>
+                                      {fresh.days !== null && (
+                                        <span className={`px-1.5 py-0.2 rounded-md font-medium border ${fresh.color}`} title={`Последняя поставка: ${brand.lastDeliveryDate || 'нет данных'}`}>
+                                          {fresh.status === 'rotation_needed' ? `🚨 Ротация ${fresh.days}д` : fresh.status === 'fresh' ? `🌿 ${fresh.days}д` : `⏳ ${fresh.days}д`}
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
 
                                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                                   {brand.tgUsername && (
@@ -3499,22 +3796,48 @@
 
               {/* ПЕРЕКЛЮЧАТЕЛЬ ПОДВКЛАДОК В РАЗДЕЛЕ «ФИНАНСЫ & ЗАЛ» */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-xl text-xs font-semibold">
+                <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-xl text-xs font-semibold overflow-x-auto max-w-full">
                   <button
                     onClick={() => { haptic.selection(); setFinanceSubView('map'); }}
-                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'map' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${financeSubView === 'map' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
                   >
-                    <span>🏬 План зала & Рейлы</span>
+                    <span>🏬 План зала</span>
                     <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-100 text-slate-700">
                       {financeStats.showroomOccupancy.occupiedRailsFraction}/{financeStats.showroomOccupancy.totalRails}
                     </span>
                   </button>
 
                   <button
-                    onClick={() => { haptic.selection(); setFinanceSubView('calendar'); }}
-                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'calendar' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    onClick={() => { haptic.selection(); setFinanceSubView('analytics'); }}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${financeSubView === 'analytics' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
                   >
-                    <span>📅 Календарь оплат</span>
+                    <span>📊 Финансы & BI</span>
+                    <span className="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-bold">
+                      MRR
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setFinanceSubView('merchandising'); }}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${financeSubView === 'merchandising' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    <span>👗 Мерчандайзинг</span>
+                    {financeStats.rotationAlertsCount > 0 ? (
+                      <span className="px-1.5 py-0.2 bg-rose-500 text-white rounded-full text-[10px] font-bold">
+                        {financeStats.rotationAlertsCount}
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.2 bg-slate-100 text-slate-600 rounded-full text-[10px]">
+                        {financeStats.totalStockCount} шт
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setFinanceSubView('calendar'); }}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${financeSubView === 'calendar' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    <span>📅 Календарь</span>
                     {financeStats.overdueBrands.length > 0 && (
                       <span className="px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px]">
                         {financeStats.overdueBrands.length}
@@ -3524,12 +3847,38 @@
 
                   <button
                     onClick={() => { haptic.selection(); setFinanceSubView('table'); }}
-                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 ${financeSubView === 'table' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                    className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${financeSubView === 'table' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
                   >
-                    <span>📋 Реестр платежей</span>
+                    <span>📋 Реестр</span>
                     <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-100 text-slate-700">
                       {financeStats.activeBrands.length}
                     </span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      haptic.success();
+                      exportFinanceCsv(brands, financeStats, currentMonthKey);
+                      showToast('Файл отчета CSV скачан');
+                    }}
+                    className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition"
+                    title="Экспорт сводки в CSV для Excel"
+                  >
+                    <span>📥</span>
+                    <span className="hidden sm:inline">Экспорт CSV</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      haptic.medium();
+                      shareFinanceTelegram(brands, financeStats, currentMonthKey, turnoverEstimate);
+                    }}
+                    className="px-2.5 py-1.5 bg-sky-50 border border-sky-200 hover:bg-sky-100 text-sky-800 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition"
+                    title="Отправить краткую финансовую сводку в Telegram"
+                  >
+                    <span>📱</span>
+                    <span className="hidden sm:inline">В Telegram</span>
                   </button>
                 </div>
               </div>
@@ -3992,7 +4341,559 @@
                 </div>
               )}
 
-              {/* ПОДВИД 2: ИНТЕРАКТИВНЫЙ КАЛЕНДАРЬ ОПЛАТ */}
+              {/* ПОДВИД 2: ФИНАНСОВАЯ АНАЛИТИКА И ВОРОНКА БРЕНДОВ (SHOWROOM BI) */}
+              {financeSubView === 'analytics' && (
+                <div className="space-y-4">
+                  {/* КАРТОЧКИ ФИНАНСОВЫХ KPI */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Арендный фонд (MRR)
+                      </div>
+                      <div className="text-xl font-black text-slate-900 mt-1">
+                        {financeStats.plannedRevenue.toLocaleString('ru-RU')} ₽<span className="text-xs font-normal text-slate-400">/мес</span>
+                      </div>
+                      <div className="text-[11px] text-emerald-600 font-medium mt-1 flex items-center justify-between">
+                        <span>Собрано: {financeStats.receivedRevenue.toLocaleString('ru-RU')} ₽</span>
+                        <span>{financeStats.plannedRevenue > 0 ? Math.round((financeStats.receivedRevenue / financeStats.plannedRevenue) * 100) : 0}%</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Потенциал при 100%: ~{(financeStats.plannedRevenue + financeStats.showroomOccupancy.extraRailPotential).toLocaleString('ru-RU')} ₽
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Средний чек аренды
+                      </div>
+                      <div className="text-xl font-black text-slate-900 mt-1">
+                        {financeStats.avgMonthlyFee.toLocaleString('ru-RU')} ₽<span className="text-xs font-normal text-slate-400">/бренд</span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 font-medium mt-1">
+                        Активных резидентов: <strong>{financeStats.activeBrands.length}</strong>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Оплатили вовремя: {financeStats.paidBrands.length} из {financeStats.activeBrands.length}
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Сквозная конверсия
+                      </div>
+                      <div className="text-xl font-black text-sky-600 mt-1">
+                        {financeStats.overallConversion}%
+                      </div>
+                      <div className="text-[11px] text-slate-600 font-medium mt-1">
+                        Из базы в резиденты ({financeStats.funnelCounts['active'] || 0}/{financeStats.totalFunnelBrands})
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        В стадии переговоров: {(financeStats.funnelCounts['replied'] || 0) + (financeStats.funnelCounts['contract'] || 0)} бр.
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Потенциал воронки (Pipeline)
+                      </div>
+                      <div className="text-xl font-black text-purple-700 mt-1">
+                        +{financeStats.pipelineValue.toLocaleString('ru-RU')} ₽<span className="text-xs font-normal text-slate-400">/мес</span>
+                      </div>
+                      <div className="text-[11px] text-purple-600 font-medium mt-1">
+                        На стадии договора: {financeStats.contractBrands.length} бр.
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        При конвертации: MRR ~{(financeStats.plannedRevenue + financeStats.pipelineValue).toLocaleString('ru-RU')} ₽
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* КАЛЬКУЛЯТОР КОМИССИОННОГО ДОХОДА & ВЫРУЧКА ПО КАТЕГОРИЯМ */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* Калькулятор комиссии с оборота */}
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                          <span>💰</span>
+                          <span>Доход с комиссии резидентов</span>
+                        </h4>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold">
+                          Ср. комиссия: {Math.round(financeStats.avgCommissionRate)}%
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        Помимо фикс-аренды, шоурум получает процент от проданных товаров резидентов. Рассчитайте прогнозный доход при разном обороте продаж:
+                      </p>
+
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-xs font-semibold text-slate-700">
+                            Продажи шоурума в месяц:
+                          </label>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              step="50000"
+                              min="0"
+                              value={turnoverEstimate}
+                              onChange={(e) => setTurnoverEstimate(Math.max(0, Number(e.target.value) || 0))}
+                              className="w-32 bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-right font-bold text-xs outline-none focus:border-slate-900"
+                            />
+                            <span className="text-xs font-semibold text-slate-500">₽</span>
+                          </div>
+                        </div>
+
+                        <input
+                          type="range"
+                          min="300000"
+                          max="5000000"
+                          step="100000"
+                          value={turnoverEstimate}
+                          onChange={(e) => setTurnoverEstimate(Number(e.target.value))}
+                          className="w-full accent-slate-900 cursor-pointer"
+                        />
+
+                        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200/80 text-xs">
+                          <div>
+                            <span className="text-slate-500 text-[11px]">Комиссионный сбор (~{Math.round(financeStats.avgCommissionRate)}%):</span>
+                            <div className="font-bold text-emerald-700 text-sm mt-0.5">
+                              +{Math.round((turnoverEstimate * financeStats.avgCommissionRate) / 100).toLocaleString('ru-RU')} ₽
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 text-[11px]">Итоговая выручка (Аренда + %):</span>
+                            <div className="font-black text-slate-900 text-sm mt-0.5">
+                              ~{(financeStats.plannedRevenue + Math.round((turnoverEstimate * financeStats.avgCommissionRate) / 100)).toLocaleString('ru-RU')} ₽
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <button
+                          onClick={() => {
+                            haptic.medium();
+                            shareFinanceTelegram(brands, financeStats, currentMonthKey, turnoverEstimate);
+                          }}
+                          className="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition"
+                        >
+                          <span>📱</span>
+                          <span>Отправить финансовую сводку в Telegram</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Выручка по товарным категориям */}
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                          <span>📊</span>
+                          <span>Разбивка выручки по категориям</span>
+                        </h4>
+                        <span className="text-xs text-slate-400 font-medium">
+                          {financeStats.categories.length} катег.
+                        </span>
+                      </div>
+
+                      <div className="space-y-2.5 pt-1">
+                        {financeStats.categories.length === 0 ? (
+                          <div className="text-xs text-slate-400 italic text-center py-4">Нет активных брендов для отображения</div>
+                        ) : (
+                          financeStats.categories.map((cat, i) => (
+                            <div key={i} className="space-y-1">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-semibold text-slate-800">{cat.name} ({cat.count} бр.)</span>
+                                <span className="font-mono text-slate-600 font-medium">
+                                  {cat.revenue.toLocaleString('ru-RU')} ₽ ({cat.pct}%)
+                                </span>
+                              </div>
+                              <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full transition-all duration-300 ${
+                                    i === 0 ? 'bg-sky-500' : i === 1 ? 'bg-purple-500' : i === 2 ? 'bg-emerald-500' : 'bg-amber-500'
+                                  }`}
+                                  style={{ width: `${Math.min(100, Math.max(4, cat.pct))}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ВОРОНКА КОНВЕРСИИ ПОТЕНЦИАЛЬНЫХ РЕЗИДЕНТОВ */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                          <span>🌪️</span>
+                          <span>Воронка привлечения брендов (Showroom Brand Funnel)</span>
+                        </h4>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Конверсия брендов на каждом шаге переговоров и заселения в шоурум
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-1 rounded-lg bg-sky-50 text-sky-800 border border-sky-200 text-xs font-bold">
+                          Сквозная конверсия: {financeStats.overallConversion}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Горизонтальные карточки стадий воронки */}
+                    <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                      {[
+                        { id: 'lead', title: '1. База / Лиды', count: financeStats.funnelCounts['lead'] || 0, bg: 'bg-slate-50', text: 'text-slate-800', border: 'border-slate-200' },
+                        { id: 'contacted', title: '2. Отправлен оффер', count: financeStats.funnelCounts['contacted'] || 0, bg: 'bg-blue-50/50', text: 'text-blue-800', border: 'border-blue-200' },
+                        { id: 'replied', title: '3. Переговоры', count: financeStats.funnelCounts['replied'] || 0, bg: 'bg-amber-50/50', text: 'text-amber-800', border: 'border-amber-200' },
+                        { id: 'contract', title: '4. Договор', count: financeStats.funnelCounts['contract'] || 0, bg: 'bg-purple-50/50', text: 'text-purple-800', border: 'border-purple-200' },
+                        { id: 'active', title: '5. Резидент в зале', count: financeStats.funnelCounts['active'] || 0, bg: 'bg-emerald-50/50', text: 'text-emerald-800', border: 'border-emerald-200' }
+                      ].map((step, idx, arr) => {
+                        const total = financeStats.totalFunnelBrands || 1;
+                        const pctOfTotal = Math.round((step.count / total) * 100);
+                        const nextStep = arr[idx + 1];
+                        const stepConversion = (nextStep && step.count > 0) ? Math.round((nextStep.count / step.count) * 100) : null;
+
+                        return (
+                          <div key={step.id} className={`${step.bg} ${step.border} border rounded-xl p-3 flex flex-col justify-between space-y-2`}>
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-600 truncate">{step.title}</div>
+                              <div className="text-xl font-black text-slate-900 mt-1">{step.count}</div>
+                              <div className="text-[10px] text-slate-400 mt-0.5">{pctOfTotal}% от базы</div>
+                            </div>
+
+                            {stepConversion !== null && (
+                              <div className="pt-2 border-t border-slate-200/60 text-[10px] text-slate-500 font-semibold flex items-center justify-between">
+                                <span>Конверсия дальше:</span>
+                                <span className="font-bold text-sky-700">{stepConversion}% ➔</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Отказы */}
+                    {financeStats.rejectedBrands.length > 0 && (
+                      <div className="p-3 rounded-xl bg-rose-50/60 border border-rose-200 flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-rose-600 font-bold">🚫 Отказ / Архив:</span>
+                          <span className="text-slate-700 font-medium">{financeStats.rejectedBrands.length} брендов ({Math.round((financeStats.rejectedBrands.length / (financeStats.totalFunnelBrands || 1)) * 100)}% от общей базы)</span>
+                        </div>
+                        <button
+                          onClick={() => { setActiveTab('kanban'); setStageFilter('rejected'); }}
+                          className="text-rose-700 hover:text-rose-900 font-semibold underline text-[11px]"
+                        >
+                          Смотреть причины
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ПОДВИД 3: ВМЕСТИМОСТЬ И КОНТРОЛЬ РОТАЦИИ ТОВАРА НА РЕЙЛАХ (MERCHANDISING & INVENTORY) */}
+              {financeSubView === 'merchandising' && (
+                <div className="space-y-4">
+                  {/* СВОДНЫЕ МЕТРИКИ МЕРЧАНДАЙЗИНГА */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Товара в шоуруме
+                      </div>
+                      <div className="text-xl font-black text-slate-900 mt-1">
+                        {financeStats.totalStockCount} <span className="text-xs font-normal text-slate-400">вещей / пар</span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-1">
+                        Вместимость: {financeStats.totalStockCapacity} вешалок/мест
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Свободный запас: {Math.max(0, financeStats.totalStockCapacity - financeStats.totalStockCount)} ед.
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Плотность выкладки
+                      </div>
+                      <div className={`text-xl font-black mt-1 ${
+                        financeStats.overallDensityPct < 50 ? 'text-amber-600' : financeStats.overallDensityPct > 95 ? 'text-rose-600' : 'text-emerald-600'
+                      }`}>
+                        {financeStats.overallDensityPct}%
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-1">
+                        {financeStats.overallDensityPct < 50 ? '⚠️ Зал полупустой' : financeStats.overallDensityPct > 95 ? '🚨 Зал перегружен' : '✅ Оптимальная плотность'}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Норма: от 50% до 95%
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Требуют ротации (&gt;30 дн)
+                      </div>
+                      <div className={`text-xl font-black mt-1 ${financeStats.rotationAlertsCount > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                        {financeStats.rotationAlertsCount} <span className="text-xs font-normal text-slate-400">брендов</span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-1">
+                        {financeStats.rotationAlertsCount > 0 ? '⚠️ Нужна допоставка / смена' : '✅ Все коллекции свежие'}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Рекомендуемая ротация: раз в 14–21 день
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs">
+                      <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Полупустые рейлы (&lt;50%)
+                      </div>
+                      <div className={`text-xl font-black mt-1 ${financeStats.lowStockCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                        {financeStats.lowStockCount} <span className="text-xs font-normal text-slate-400">брендов</span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 mt-1">
+                        Риск просадки продаж
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">
+                        Запросить допоставку топовых позиций
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* АЛЕРТЫ РОТАЦИИ: БРЕНДЫ, КОТОРЫЕ НЕ ОБНОВЛЯЛИСЬ > 30 ДНЕЙ */}
+                  {financeStats.activeBrands.filter(b => getFreshnessInfo(b).status === 'rotation_needed').length > 0 && (
+                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 shadow-xs space-y-3 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-bold text-sm text-rose-900 flex items-center gap-2">
+                          <span>🚨</span>
+                          <span>Требуется ротация коллекций (поставки не было &gt; 30 дней)</span>
+                        </h4>
+                        <span className="text-xs font-bold text-rose-700 bg-white px-2 py-0.5 rounded-full border border-rose-200">
+                          {financeStats.activeBrands.filter(b => getFreshnessInfo(b).status === 'rotation_needed').length} бр.
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                        {financeStats.activeBrands
+                          .filter(b => getFreshnessInfo(b).status === 'rotation_needed')
+                          .map(b => {
+                            const fresh = getFreshnessInfo(b);
+                            const stock = getStockInfo(b);
+                            const restockMsg = `Привет, команда ${b.name}! 👋\n\nПо статистике шоурума ваша коллекция экспонируется уже ${fresh.days} дней без обновления (последняя поставка: ${b.lastDeliveryDate || 'ранее'}).\n\nПокупатели любят свежие дропы и новинки! Подскажите, планируете ли вы ротацию или допоставку актуальных размеров на этой неделе?`;
+
+                            return (
+                              <div key={b.id} className="bg-white p-3 rounded-xl border border-rose-200 shadow-2xs space-y-2">
+                                <div className="flex items-start justify-between">
+                                  <div>
+                                    <div className="font-bold text-xs text-slate-900">{b.name}</div>
+                                    <div className="text-[11px] text-slate-500">{b.assignedPlaces || 'Рейл'}</div>
+                                  </div>
+                                  <span className="px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-bold">
+                                    {fresh.days} дн. назад
+                                  </span>
+                                </div>
+
+                                <div className="text-[11px] text-slate-600 flex items-center justify-between">
+                                  <span>Остаток: <strong>{stock.current}/{stock.max}</strong></span>
+                                  <span>Плотность: <strong>{stock.pct}%</strong></span>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                                  <button
+                                    onClick={() => handleQuickRestock(b.id)}
+                                    className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 transition"
+                                  >
+                                    <span>⚡</span>
+                                    <span>Поставка сегодня</span>
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      haptic.light();
+                                      if (b.tgUsername) {
+                                        window.open(`https://t.me/${b.tgUsername.replace('@','')}`, '_blank');
+                                      }
+                                      navigator.clipboard.writeText(restockMsg);
+                                      showToast(`Текст запроса ротации для «${b.name}» скопирован!`);
+                                    }}
+                                    className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition"
+                                    title="Написать в Telegram о допоставке"
+                                  >
+                                    <span>💬</span>
+                                    <span>Написать</span>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ПОЛНЫЙ РЕЕСТР МЕРЧАНДАЙЗИНГА ПО ВСЕМ РЕЗИДЕНТАМ */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                          <span>📋</span>
+                          <span>Контроль наполнения рейлов и свежести коллекций</span>
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Оперативная корректировка остатка вешалок/пар прямо из торгового зала
+                        </p>
+                      </div>
+
+                      {/* Фильтр статусов мерча */}
+                      <div className="flex items-center gap-1 text-xs">
+                        <button
+                          onClick={() => { haptic.selection(); setMerchFilter('all'); }}
+                          className={`px-2.5 py-1 rounded-lg transition ${merchFilter === 'all' ? 'bg-slate-900 text-white font-bold' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                        >
+                          Все ({financeStats.activeBrands.length})
+                        </button>
+                        <button
+                          onClick={() => { haptic.selection(); setMerchFilter('rotation'); }}
+                          className={`px-2.5 py-1 rounded-lg transition ${merchFilter === 'rotation' ? 'bg-rose-600 text-white font-bold' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}
+                        >
+                          Нужна ротация ({financeStats.rotationAlertsCount})
+                        </button>
+                        <button
+                          onClick={() => { haptic.selection(); setMerchFilter('low'); }}
+                          className={`px-2.5 py-1 rounded-lg transition ${merchFilter === 'low' ? 'bg-amber-600 text-white font-bold' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}
+                        >
+                          Полупустые ({financeStats.lowStockCount})
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {financeStats.activeBrands
+                        .filter(b => {
+                          if (merchFilter === 'rotation') return getFreshnessInfo(b).status === 'rotation_needed';
+                          if (merchFilter === 'low') return getStockInfo(b).status === 'low';
+                          if (merchFilter === 'overflow') return getStockInfo(b).status === 'overflow';
+                          return true;
+                        })
+                        .map(b => {
+                          const stock = getStockInfo(b);
+                          const fresh = getFreshnessInfo(b);
+
+                          return (
+                            <div key={b.id} className="p-3.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50/50 transition space-y-2.5">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-sm text-slate-900">{b.name}</span>
+                                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${stock.color}`}>
+                                      {stock.label} ({stock.pct}%)
+                                    </span>
+                                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${fresh.color}`}>
+                                      {fresh.label}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+                                    <span>{b.category}</span>
+                                    <span>•</span>
+                                    <span className="text-sky-700 font-semibold">{b.assignedPlaces || 'Рейл'}</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => handleQuickRestock(b.id)}
+                                    className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                                    title="Зафиксировать поставку сегодня"
+                                  >
+                                    <span>⚡</span>
+                                    <span>Поставка сегодня</span>
+                                  </button>
+
+                                  <button
+                                    onClick={() => openBrandModal(b)}
+                                    className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition"
+                                  >
+                                    ✎ Изменить
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Прогресс-бар плотности выкладки */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[11px] text-slate-600">
+                                  <span>Наполнение: <strong>{stock.current}</strong> из <strong>{stock.max}</strong> вешалок/мест</span>
+                                  <span className="text-[10px] text-slate-400">
+                                    Поставка: {b.lastDeliveryDate ? `${b.lastDeliveryDate} (${fresh.days} дн. назад)` : 'нет данных'}
+                                  </span>
+                                </div>
+                                <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden flex">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-200 ${
+                                      stock.status === 'low' ? 'bg-amber-500' : stock.status === 'overflow' ? 'bg-rose-500' : 'bg-emerald-500'
+                                    }`}
+                                    style={{ width: `${Math.min(100, Math.max(3, stock.pct))}%` }}
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Кнопки оперативной корректировки остатка */}
+                              <div className="flex items-center justify-between pt-1 text-xs">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[11px] text-slate-500 mr-1">Корректировка:</span>
+                                  <button
+                                    onClick={() => handleAdjustStock(b.id, -5)}
+                                    className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                                    title="Уменьшить на 5"
+                                  >
+                                    -5
+                                  </button>
+                                  <button
+                                    onClick={() => handleAdjustStock(b.id, -1)}
+                                    className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                                    title="Уменьшить на 1"
+                                  >
+                                    -1
+                                  </button>
+                                  <span className="px-2.5 py-0.5 bg-slate-50 border border-slate-200 rounded font-mono font-bold text-slate-900 text-xs">
+                                    {stock.current} шт
+                                  </span>
+                                  <button
+                                    onClick={() => handleAdjustStock(b.id, +1)}
+                                    className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                                    title="Увеличить на 1"
+                                  >
+                                    +1
+                                  </button>
+                                  <button
+                                    onClick={() => handleAdjustStock(b.id, +5)}
+                                    className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                                    title="Увеличить на 5"
+                                  >
+                                    +5
+                                  </button>
+                                </div>
+
+                                {b.tgUsername && (
+                                  <a
+                                    href={`https://t.me/${b.tgUsername.replace('@','')}`}
+                                    target="_blank"
+                                    className="text-sky-600 hover:text-sky-800 font-medium text-[11px] flex items-center gap-1"
+                                  >
+                                    <span>💬</span>
+                                    <span>@{b.tgUsername.replace('@','')}</span>
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ПОДВИД 4: ИНТЕРАКТИВНЫЙ КАЛЕНДАРЬ ОПЛАТ */}
               {financeSubView === 'calendar' && (
                 <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
                   {(() => {
@@ -4893,13 +5794,17 @@
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <div>
                     <label className="block font-semibold mb-1">Аренда (₽/мес)</label>
                     <input name="monthlyFee" type="number" defaultValue={editingBrand?.monthlyFee ?? 30000} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">День оплаты (число 1–31)</label>
+                    <label className="block font-semibold mb-1">Комиссия (%)</label>
+                    <input name="commission" defaultValue={editingBrand?.commission || '25%'} placeholder="25%" className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">День оплаты</label>
                     <input name="paymentDay" type="number" min="1" max="31" defaultValue={editingBrand?.paymentDay ?? 1} className="w-full border border-slate-200 rounded-lg p-2 outline-none" />
                   </div>
                 </div>
@@ -5033,6 +5938,63 @@
                         </button>
                       </div>
                     )}
+                  </div>
+                </div>
+
+                {/* МЕРЧАНДАЙЗИНГ И ОСТАТКИ ТОВАРА */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="block font-bold text-slate-800 text-xs">
+                      👗 Наполнение и ротация товара:
+                    </label>
+                    <span className="text-[10px] text-slate-400">
+                      Вещи, вешалки, обувь, ротация
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-0.5">В зале сейчас (вещей/пар)</label>
+                      <input
+                        name="currentStockCount"
+                        type="number"
+                        min="0"
+                        defaultValue={editingBrand?.currentStockCount ?? 0}
+                        placeholder="Например: 35"
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2 outline-none text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-600 mb-0.5">Лимит места (вместимость)</label>
+                      <input
+                        name="maxStockCapacity"
+                        type="number"
+                        min="0"
+                        defaultValue={editingBrand?.maxStockCapacity ?? 40}
+                        placeholder="Например: 40"
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2 outline-none text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <label className="block text-[11px] font-medium text-slate-600">Дата последней поставки/ротации</label>
+                      <button
+                        type="button"
+                        onClick={() => { haptic.light(); setModalDeliveryDate(getTodayDateString()); }}
+                        className="text-[10px] text-sky-600 hover:text-sky-800 font-semibold flex items-center gap-0.5"
+                      >
+                        ⚡ Поставка сегодня
+                      </button>
+                    </div>
+                    <input
+                      name="lastDeliveryDate"
+                      type="date"
+                      value={modalDeliveryDate}
+                      onChange={(e) => setModalDeliveryDate(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 outline-none text-xs"
+                    />
                   </div>
                 </div>
 
