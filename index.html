@@ -568,9 +568,9 @@
 
       if (uClean === 'social_market_ru' || pClean === '79055663356' || tgClean === '5587182742') {
         username = 'social_market_ru';
-        phone = '+7 905 566 3356';
-        name = 'SM Account';
-        role = 'admin';
+        phone = phone || '+7 905 566 3356';
+        name = name || 'SM Account';
+        role = role || 'brand';
         immutable = false;
         tgUserId = '5587182742';
       } else if (uClean === 'tvoyaddoma' || pClean === '79266011608') {
@@ -884,6 +884,30 @@
           action: 'syncStock',
           apiKey: apiKey || '',
           items
+        });
+      },
+
+      async issueOrder(url, apiKey, payload) {
+        return await this.callApi(url, {
+          action: 'issueOrder',
+          apiKey: apiKey || '',
+          ...payload
+        });
+      },
+
+      async processReturn(url, apiKey, payload) {
+        return await this.callApi(url, {
+          action: 'processReturn',
+          apiKey: apiKey || '',
+          ...payload
+        });
+      },
+
+      async syncWarehouseConfig(url, apiKey, warehouseRacks) {
+        return await this.callApi(url, {
+          action: 'syncWarehouseConfig',
+          apiKey: apiKey || '',
+          warehouseRacks
         });
       },
 
@@ -1245,12 +1269,74 @@
       }, [stockOperations]);
 
       // Фильтры и состояния вкладки Склад & Касса
-      const [inventorySubTab, setInventorySubTab] = useState('stock'); // 'stock' | 'pos' | 'shipments' | 'operations'
+      const [inventorySubTab, setInventorySubTab] = useState('stock'); // 'stock' | 'pos' | 'returns' | 'shipments' | 'operations'
       const [inventorySearchQuery, setInventorySearchQuery] = useState('');
       const [inventoryBrandFilter, setInventoryBrandFilter] = useState('all');
       const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all');
       const [inventoryPlaceFilter, setInventoryPlaceFilter] = useState('all');
       const [inventoryStatusFilter, setInventoryStatusFilter] = useState('all');
+
+      // Реестр онлайн-заказов и Стеллажи склада
+      const [orders, setOrders] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_orders_v1');
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [warehouseRacks, setWarehouseRacks] = useState(() => {
+        const saved = localStorage.getItem('sm_crm_warehouse_racks_v1');
+        return saved ? JSON.parse(saved) : [
+          { rack: 'A', name: 'Стеллаж A', shelves: 4 },
+          { rack: 'B', name: 'Стеллаж B', shelves: 4 },
+          { rack: 'C', name: 'Стеллаж C', shelves: 4 },
+          { rack: 'D', name: 'Стеллаж D', shelves: 4 }
+        ];
+      });
+
+      useEffect(() => {
+        try { localStorage.setItem('sm_crm_orders_v1', JSON.stringify(orders)); } catch (e) {}
+      }, [orders]);
+
+      useEffect(() => {
+        try { localStorage.setItem('sm_crm_warehouse_racks_v1', JSON.stringify(warehouseRacks)); } catch (e) {}
+      }, [warehouseRacks]);
+
+      // Быстрая касса / Выдача оплаченных заказов
+      const [orderSourceFilter, setOrderSourceFilter] = useState('all'); // 'all' | 'Сайт бренда' | 'Маркетплейс витрина'
+      const [selectedOrderId, setSelectedOrderId] = useState('');
+      const [orderItemLocations, setOrderItemLocations] = useState({}); // { [itemSku]: locationCode }
+      const [isIssuingOrder, setIsIssuingOrder] = useState(false);
+
+      // Вкладка «Возврат по заказам»
+      const [returnOrderSearch, setReturnOrderSearch] = useState('');
+      const [selectedReturnOrderId, setSelectedReturnOrderId] = useState('');
+      const [returnSelectedItems, setReturnSelectedItems] = useState({}); // { [itemSku]: boolean }
+      const [returnBrandApprovals, setReturnBrandApprovals] = useState({}); // { [brandName]: boolean }
+      const [returnBrandPhotos, setReturnBrandPhotos] = useState({}); // { [brandName]: string (dataUrl) }
+      const [returnItemLocations, setReturnItemLocations] = useState({}); // { [itemSku]: locationCode }
+      const [returnReason, setReturnReason] = useState('Возврат в зале шоурума');
+      const [isProcessingReturn, setIsProcessingReturn] = useState(false);
+      const [completedReturnInfo, setCompletedReturnInfo] = useState(null);
+
+      // Единое модальное окно безопасного экспорта (Excel шаблоны, остатки, JSON)
+      const [exportModal, setExportModal] = useState({
+        isOpen: false,
+        title: '',
+        subtitle: '',
+        filename: '',
+        fileType: 'xlsx',
+        blob: null,
+        dataUrl: null,
+        jsonStr: ''
+      });
+      const [isSendingExportTelegram, setIsSendingExportTelegram] = useState(false);
+
+      // Модальное окно конфигурации стеллажей склада (только для Админа и Владельца)
+      const [isWarehouseModalOpen, setIsWarehouseModalOpen] = useState(false);
+      const [newRackLetter, setNewRackLetter] = useState('');
+      const [newRackShelves, setNewRackShelves] = useState(4);
+      const [isSavingWarehouse, setIsSavingWarehouse] = useState(false);
+
+      // Модальное окно инструкции подключения заказов (Tilda, InSales, vitrina.market)
+      const [isIntegrationGuideOpen, setIsIntegrationGuideOpen] = useState(false);
 
       // Модалка быстрой кассовой операции
       const [isPosModalOpen, setIsPosModalOpen] = useState(false);
@@ -1535,7 +1621,7 @@
                   (uName === 'social_market_ru' || uPhone === '79055663356' || uTgId === '5587182742'));
         });
 
-        if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'owner')) {
+        if (matchedAcl && (matchedAcl.role === 'admin' || matchedAcl.role === 'user' || matchedAcl.role === 'seller' || matchedAcl.role === 'brand' || matchedAcl.role === 'owner')) {
           if (currentTgId && !matchedAcl.tgUserId) {
             setAclUsers(prev => prev.map(u => u.id === matchedAcl.id ? { ...u, tgUserId: currentTgId } : u));
           }
@@ -1769,6 +1855,18 @@
           setSelectedDayDetails(null);
           return;
         }
+        if (exportModal.isOpen) {
+          setExportModal(prev => ({ ...prev, isOpen: false }));
+          return;
+        }
+        if (isWarehouseModalOpen) {
+          setIsWarehouseModalOpen(false);
+          return;
+        }
+        if (isIntegrationGuideOpen) {
+          setIsIntegrationGuideOpen(false);
+          return;
+        }
         if (isCommerceMLModalOpen) {
           setIsCommerceMLModalOpen(false);
           return;
@@ -1809,6 +1907,9 @@
           return;
         }
       }, [
+        exportModal.isOpen,
+        isWarehouseModalOpen,
+        isIntegrationGuideOpen,
         showRawJson,
         brandToDelete,
         isCapacitySettingsOpen,
@@ -1831,6 +1932,9 @@
         if (!tg || !tg.BackButton) return;
 
         const hasOpenModal = Boolean(
+          exportModal.isOpen ||
+          isWarehouseModalOpen ||
+          isIntegrationGuideOpen ||
           isModalOpen ||
           isPosModalOpen ||
           isShipmentModalOpen ||
@@ -1983,6 +2087,12 @@
             if (Array.isArray(res.stockOperations)) {
               setStockOperations(res.stockOperations);
             }
+            if (Array.isArray(res.orders)) {
+              setOrders(res.orders);
+            }
+            if (Array.isArray(res.warehouseRacks)) {
+              setWarehouseRacks(res.warehouseRacks);
+            }
             if (res.versionHash) {
               setSystemVersionHash(res.versionHash);
             }
@@ -2013,6 +2123,8 @@
                 if (Array.isArray(allRes.nomenclature)) setNomenclature(allRes.nomenclature);
                 if (Array.isArray(allRes.stock)) setStock(allRes.stock);
                 if (Array.isArray(allRes.stockOperations)) setStockOperations(allRes.stockOperations);
+                if (Array.isArray(allRes.orders)) setOrders(allRes.orders);
+                if (Array.isArray(allRes.warehouseRacks)) setWarehouseRacks(allRes.warehouseRacks);
                 setCloudStatus('synced');
               }
             }
@@ -2311,7 +2423,7 @@
           return;
         }
 
-        const targetRole = authState.role === 'owner' ? newAclRole : 'seller';
+        const targetRole = (authState.role === 'owner' || authState.role === 'admin') ? newAclRole : 'seller';
 
         if (targetRole === 'brand' && !newAclBrandId) {
           showToast('Пожалуйста, выберите бренд для закрепления за пользователем');
@@ -2357,8 +2469,8 @@
       };
 
       const handleChangeUserRole = (targetUserId, nextRole) => {
-        if (authState.role !== 'owner') {
-          showToast('Только Владелец может изменять роли администраторов');
+        if (authState.role !== 'owner' && authState.role !== 'admin') {
+          showToast('Только Администратор или Владелец может изменять роли пользователей');
           return;
         }
         const target = aclUsers.find(u => u.id === targetUserId);
@@ -2372,6 +2484,8 @@
         const updatedUser = { ...target, role: nextRole };
         if (nextRole !== 'brand') {
           updatedUser.brandId = '';
+        } else if (!updatedUser.brandId && brands.length > 0) {
+          updatedUser.brandId = brands[0].id;
         }
         setAclUsers(prev => prev.map(u => u.id === targetUserId ? updatedUser : u));
         queueCloudSync(() => CloudStorageService.syncUser(gasUrlRef.current, gasApiKeyRef.current, updatedUser, 'update'));
@@ -2405,8 +2519,8 @@
           return;
         }
 
-        if (authState.role === 'admin' && target.role !== 'user') {
-          showToast('Администратор может удалять только Пользователей');
+        if (authState.role === 'admin' && (target.role === 'owner' || target.role === 'admin')) {
+          showToast('Администратор не может удалять Администраторов или Владельца');
           return;
         }
 
@@ -3219,6 +3333,7 @@
         reader.readAsBinaryString(file);
       };
 
+      // --- БЕЗОПАСНЫЙ ЭКСПОРТ EXCEL (БЕЗ ЗАВИСАНИЯ В TELEGRAM WEBVIEW) ---
       const handleDownloadExcelTemplate = () => {
         haptic.light();
         if (!window.XLSX) {
@@ -3234,8 +3349,19 @@
         const ws = window.XLSX.utils.aoa_to_sheet(wsData);
         const wb = window.XLSX.utils.book_new();
         window.XLSX.utils.book_append_sheet(wb, ws, 'Накладная поставки');
-        window.XLSX.writeFile(wb, 'Шаблон_Поставки_Showroom.xlsx');
-        showToast('📥 Шаблон накладной скачан!');
+        const wbout = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        
+        setExportModal({
+          isOpen: true,
+          title: '📥 Шаблон накладной Excel',
+          subtitle: 'Файл Шаблон_Поставки_Showroom.xlsx для заполнения ассортимента',
+          filename: 'Шаблон_Поставки_Showroom.xlsx',
+          fileType: 'xlsx',
+          blob: blob,
+          dataUrl: null,
+          jsonStr: ''
+        });
       };
 
       const handleExportStockToExcel = (targetBrandId = null) => {
@@ -3245,6 +3371,7 @@
           return;
         }
         const sourceList = targetBrandId ? stock.filter(s => s.brandId === targetBrandId) : stock;
+        const targetBrandName = targetBrandId ? (brands.find(b => b.id === targetBrandId)?.name || 'Бренд') : 'Все';
         const rows = [
           ['Артикул', 'Штрихкод', 'Наименование', 'Бренд', 'Категория', 'Цвет', 'Размер', 'Локация в зале', 'Остаток в зале', 'Розничная цена']
         ];
@@ -3266,9 +3393,293 @@
         const ws = window.XLSX.utils.aoa_to_sheet(rows);
         const wb = window.XLSX.utils.book_new();
         window.XLSX.utils.book_append_sheet(wb, ws, 'Остатки');
-        const filename = `Остатки_Шоурум_${targetBrandId ? 'Бренд_' : 'Все_'}${getTodayDateString()}.xlsx`;
-        window.XLSX.writeFile(wb, filename);
-        showToast('📊 Файл остатков Excel выгружен!');
+        const filename = `Остатки_Шоурум_${targetBrandName}_${getTodayDateString()}.xlsx`;
+        const wbout = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+        setExportModal({
+          isOpen: true,
+          title: `📊 Остатки склада (${targetBrandName})`,
+          subtitle: `Файл Excel с актуальными остатками в зале (${rows.length - 1} поз.)`,
+          filename: filename,
+          fileType: 'xlsx',
+          blob: blob,
+          dataUrl: null,
+          jsonStr: ''
+        });
+      };
+
+      const handleSendExportToTelegram = async () => {
+        if (!exportModal.blob) return;
+        const targetChatId = authState.user?.tgUserId || adminChatId || '5587182742';
+        if (!targetChatId) {
+          showToast('Не определен ID чата Telegram для отправки');
+          return;
+        }
+        setIsSendingExportTelegram(true);
+        try {
+          const formData = new FormData();
+          formData.append('chat_id', targetChatId);
+          formData.append('document', exportModal.blob, exportModal.filename);
+          formData.append(
+            'caption',
+            `📄 ${exportModal.title}\n📅 Дата: ${new Date().toLocaleString('ru-RU')}\n🏢 Showroom CRM`
+          );
+
+          const res = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (data.ok) {
+            showToast('✅ Файл успешно отправлен вам в диалог с ботом Telegram!');
+            setExportModal(prev => ({ ...prev, isOpen: false }));
+          } else {
+            throw new Error(data.description || 'Ошибка Telegram Bot API');
+          }
+        } catch (e) {
+          console.error('Ошибка отправки файла в Telegram:', e);
+          showToast(`Ошибка: ${e.message || 'Не удалось отправить файл'}`);
+        } finally {
+          setIsSendingExportTelegram(false);
+        }
+      };
+
+      const handleShareExportViaIOS = async () => {
+        if (!exportModal.blob) return;
+        try {
+          if (navigator.share) {
+            const file = new File([exportModal.blob], exportModal.filename, { type: exportModal.blob.type });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                files: [file],
+                title: exportModal.filename
+              });
+              showToast('Файл передан в меню системы!');
+              return;
+            }
+          }
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            console.warn('Ошибка navigator.share:', err);
+          }
+        }
+        showToast('Поделиться недоступно на данном устройстве');
+      };
+
+      const handleDirectExportBrowserDownload = () => {
+        if (!exportModal.blob) return;
+        const url = URL.createObjectURL(exportModal.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = exportModal.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Файл скачан: ${exportModal.filename}`);
+      };
+
+      // --- ХЕЛПЕР ДОСТУПНЫХ ЛОКАЦИЙ ДЛЯ ТОВАРА (РЕЙЛ БРЕНДА ИЛИ ПОЛКА СКЛАДА) ---
+      const getAvailableLocationsForItem = (itemBrandNameOrId) => {
+        const brand = brands.find(b => b.id === itemBrandNameOrId || b.name === itemBrandNameOrId);
+        const brandRails = brand ? parseAssignedPlaces(brand.assignedPlaces || '') : [];
+        const locations = [];
+
+        // 1. Рейлы закрепленного бренда
+        if (brandRails.length > 0) {
+          brandRails.forEach(rail => {
+            locations.push({
+              id: rail,
+              name: `🏷 Рейл бренда: ${rail}`,
+              type: 'rail'
+            });
+          });
+        } else {
+          locations.push({
+            id: 'Рейл бренда',
+            name: '🏷 Рейл бренда (Основной)',
+            type: 'rail'
+          });
+        }
+
+        // 2. Стеллажи и полки склада (A-1, A-2... B-1, B-2...)
+        const racks = warehouseRacks && warehouseRacks.length > 0 ? warehouseRacks : [
+          { rack: 'A', shelves: 4 },
+          { rack: 'B', shelves: 4 },
+          { rack: 'C', shelves: 4 },
+          { rack: 'D', shelves: 4 }
+        ];
+
+        racks.forEach(r => {
+          const count = Number(r.shelves) || 4;
+          for (let s = 1; s <= count; s++) {
+            const code = `Склад ${r.rack}-${s}`;
+            locations.push({
+              id: code,
+              name: `📦 ${code} (Стеллаж ${r.rack}, Полка ${s})`,
+              type: 'warehouse'
+            });
+          }
+        });
+
+        return locations;
+      };
+
+      // --- ПРОВЕДЕНИЕ ВЫДАЧИ ОПЛАЧЕННОГО ОНЛАЙН-ЗАКАЗА ---
+      const handleIssueOrder = async (orderToIssue) => {
+        if (!orderToIssue) return;
+        setIsIssuingOrder(true);
+        try {
+          const itemsWithLocations = (orderToIssue.items || []).map(item => {
+            const defaultLoc = getAvailableLocationsForItem(item.brand || orderToIssue.brandName)[0]?.id || 'Рейл бренда';
+            const chosenLoc = orderItemLocations[item.sku] || defaultLoc;
+            return {
+              ...item,
+              location: chosenLoc
+            };
+          });
+
+          const nowIso = new Date().toISOString();
+          setOrders(prev => prev.map(o => o.id === orderToIssue.id ? { ...o, status: 'issued', issuedAt: nowIso } : o));
+
+          const res = await CloudStorageService.issueOrder(gasUrlRef.current, gasApiKeyRef.current, {
+            orderId: orderToIssue.id,
+            issuedBy: authState.user?.name || 'Администратор',
+            items: itemsWithLocations
+          });
+
+          if (res && res.success) {
+            showToast(`✅ Заказ №${orderToIssue.orderNumber || orderToIssue.id} успешно выдан покупателю!`);
+            addAuditLog(
+              'ВЫДАЧА ЗАКАЗА',
+              `Выдан заказ №${orderToIssue.orderNumber || orderToIssue.id} покупателю ${orderToIssue.customerName} (${orderToIssue.totalAmount} ₽, источник: ${orderToIssue.source})`
+            );
+            setSelectedOrderId('');
+          } else {
+            showToast(`Ошибка выдачи: ${res?.error || 'Сервер не подтвердил операцию'}`);
+          }
+        } catch (err) {
+          console.error('Error issuing order:', err);
+          showToast('Ошибка при проведении выдачи заказа');
+        } finally {
+          setIsIssuingOrder(false);
+        }
+      };
+
+      // --- ПРОВЕДЕНИЕ ВОЗВРАТА ТОВАРА ПО ЗАКАЗУ ---
+      const handleExecuteReturn = async () => {
+        const order = orders.find(o => o.id === selectedReturnOrderId);
+        if (!order) {
+          showToast('Выберите заказ для оформления возврата');
+          return;
+        }
+
+        const selectedItems = (order.items || []).filter(item => returnSelectedItems[item.sku]);
+        if (selectedItems.length === 0) {
+          showToast('Отметьте хотя бы одну позицию для возврата');
+          return;
+        }
+
+        // Расчет 14 дней (не считая дня выдачи заказа)
+        const issueDate = new Date(order.issuedAt || order.createdAt);
+        const today = new Date();
+        const diffTime = today.setHours(0,0,0,0) - new Date(issueDate).setHours(0,0,0,0);
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+        const uniqueBrands = [...new Set(selectedItems.map(it => it.brand || order.brandName))];
+
+        if (diffDays > 14) {
+          const unapproved = uniqueBrands.filter(bName => !returnBrandApprovals[bName]);
+          if (unapproved.length > 0) {
+            showToast(`⚠️ Получите подтверждение согласия от бренда: ${unapproved.join(', ')}`);
+            return;
+          }
+        }
+
+        // Проверка фото для каждого возвращаемого бренда
+        const missingPhotos = uniqueBrands.filter(bName => !returnBrandPhotos[bName]);
+        if (missingPhotos.length > 0) {
+          showToast(`📸 Прикрепите фото возвращаемых вещей для: ${missingPhotos.join(', ')}`);
+          return;
+        }
+
+        setIsProcessingReturn(true);
+        try {
+          const returnedItemsPayload = selectedItems.map(item => {
+            const defaultLoc = getAvailableLocationsForItem(item.brand || order.brandName)[0]?.id || 'Рейл бренда';
+            const loc = returnItemLocations[item.sku] || defaultLoc;
+            return {
+              ...item,
+              location: loc
+            };
+          });
+
+          const nowIso = new Date().toISOString();
+          const returnInfo = {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            returnedAt: nowIso,
+            items: returnedItemsPayload,
+            photos: returnBrandPhotos,
+            brands: uniqueBrands,
+            customerName: order.customerName,
+            customerPhone: order.customerPhone,
+            reason: returnReason
+          };
+
+          setOrders(prev => prev.map(o => o.id === order.id ? {
+            ...o,
+            status: 'returned',
+            returnedAt: nowIso,
+            returnReason: returnReason,
+            returnPhotos: JSON.stringify(returnBrandPhotos)
+          } : o));
+
+          const res = await CloudStorageService.processReturn(gasUrlRef.current, gasApiKeyRef.current, {
+            orderId: order.id,
+            items: returnedItemsPayload,
+            photos: returnBrandPhotos,
+            reason: returnReason
+          });
+
+          if (res && res.success) {
+            showToast(`✅ Возврат по заказу №${order.orderNumber || order.id} оформлен! Вещи возвращены в остатки.`);
+            addAuditLog(
+              'ВОЗВРАТ ЗАКАЗА',
+              `Оформлен возврат по заказу №${order.orderNumber || order.id} (${returnedItemsPayload.length} поз., бренды: ${uniqueBrands.join(', ')})`
+            );
+            setCompletedReturnInfo(returnInfo);
+          } else {
+            showToast(`Ошибка оформления возврата: ${res?.error || 'Сервер отклонил операцию'}`);
+          }
+        } catch (err) {
+          console.error('Error processing return:', err);
+          showToast('Ошибка при оформлении возврата');
+        } finally {
+          setIsProcessingReturn(false);
+        }
+      };
+
+      // --- СОХРАНЕНИЕ КОНФИГУРАЦИИ СТЕЛЛАЖЕЙ СКЛАДА ---
+      const handleSaveWarehouseRacks = async (updatedRacks) => {
+        setIsSavingWarehouse(true);
+        try {
+          setWarehouseRacks(updatedRacks);
+          const res = await CloudStorageService.syncWarehouseConfig(gasUrlRef.current, gasApiKeyRef.current, updatedRacks);
+          if (res && res.success) {
+            showToast('✅ Конфигурация стеллажей склада сохранена в Google Таблицу!');
+            addAuditLog('СКЛАД', `Обновлена конфигурация стеллажей: ${updatedRacks.length} стеллажей`);
+            setIsWarehouseModalOpen(false);
+          } else {
+            showToast(`Ошибка сохранения: ${res?.error || 'Не удалось обновить'}`);
+          }
+        } catch (err) {
+          console.error('Error saving warehouse racks:', err);
+          showToast('Ошибка сохранения конфигурации склада');
+        } finally {
+          setIsSavingWarehouse(false);
+        }
       };
 
       const handleSubmitShipment = async () => {
@@ -6372,7 +6783,21 @@
                       inventorySubTab === 'pos' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                     }`}
                   >
-                    <span>💰 Быстрая касса / Продажа</span>
+                    <span>💰 Быстрая касса / Заказы</span>
+                    {orders.filter(o => o.status === 'paid').length > 0 && (
+                      <span className="px-1.5 py-0.2 bg-emerald-500 text-white rounded-full text-[10px] font-bold">
+                        {orders.filter(o => o.status === 'paid').length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => { haptic.selection(); setInventorySubTab('returns'); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 ${
+                      inventorySubTab === 'returns' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <span>↩️ Возврат по заказам</span>
                   </button>
 
                   <button
@@ -6398,6 +6823,22 @@
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
+                  {isAdminOrOwner && (
+                    <button
+                      onClick={() => setIsWarehouseModalOpen(true)}
+                      className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-xs"
+                      title="Настройка стеллажей и полок склада"
+                    >
+                      <span>⚙️ Стеллажи склада</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setIsIntegrationGuideOpen(true)}
+                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-xs"
+                    title="Инструкция по интеграции сайтов брендов и vitrina.market"
+                  >
+                    <span>🔌 Подключение заказов</span>
+                  </button>
                   <button
                     onClick={handleScanBarcode}
                     className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-xl text-xs font-bold transition flex items-center gap-1"
@@ -6405,12 +6846,6 @@
                   >
                     <span>📷</span>
                     <span>Штрихкод</span>
-                  </button>
-                  <button
-                    onClick={() => handleOpenPosModal(null, 'Продажа')}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-xs"
-                  >
-                    <span>+ Продажа</span>
                   </button>
                   <button
                     onClick={() => setIsShipmentModalOpen(true)}
@@ -6705,209 +7140,758 @@
                 </div>
               )}
 
-              {/* ПОДВКЛАДКА 2: БЫСТРАЯ КАССА (POS) */}
+              {/* ПОДВКЛАДКА 2: БЫСТРАЯ КАССА / ВЫДАЧА ОПЛАЧЕННЫХ ЗАКАЗОВ */}
               {inventorySubTab === 'pos' && (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                  <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
+                  <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
                     <div>
-                      <h3 className="font-bold text-sm text-slate-900">💰 Кассовая операция</h3>
-                      <p className="text-slate-500 mt-0.5">
-                        Проведение продажи, возврата, списания или перемещения товара в один клик.
+                      <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        <span>💰 Быстрая касса / Выдача заказов</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-100 text-emerald-800 font-bold">
+                          Только оплаченные онлайн-заказы
+                        </span>
+                      </h3>
+                      <p className="text-slate-500 mt-0.5 text-[11px]">
+                        Выдача заказов, поступивших с сайтов брендов (Tilda / InSales) или маркетплейса vitrina.market.
                       </p>
                     </div>
 
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Тип операции:</label>
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {['Продажа', 'Возврат', 'Списание', 'Перемещение'].map(type => (
-                            <button
-                              key={type}
-                              type="button"
-                              onClick={() => setPosActionType(type)}
-                              className={`py-2 px-3 rounded-xl font-bold text-xs transition border ${
-                                posActionType === type
-                                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                              }`}
-                            >
-                              {type === 'Продажа' ? '🛍 Продажа' : type === 'Возврат' ? '↩️ Возврат' : type === 'Списание' ? '🗑 Списание' : '⇄ Перемещение'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Выберите товар (или введите штрихкод):</label>
-                        <select
-                          value={posSelectedItem?.sku || ''}
-                          onChange={e => {
-                            const found = stock.find(s => s.sku === e.target.value);
-                            setPosSelectedItem(found || null);
-                            if (found) {
-                              const nom = nomenclature.find(n => n.sku === found.sku);
-                              setPosPrice(Number(nom?.price) || Number(found.price) || 0);
-                              setPosPlace(found.place || 'Рейл 1');
-                            }
-                          }}
-                          className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-medium text-xs outline-none"
-                        >
-                          <option value="">-- Выберите позицию из остатков --</option>
-                          {stock.map(s => {
-                            const nom = nomenclature.find(n => n.sku === s.sku) || {};
-                            return (
-                              <option key={s.sku + '-' + s.place} value={s.sku}>
-                                {nom.name || s.name || s.sku} [{s.sku}] • {s.place} ({s.available || s.quantity} шт.) — {nom.price || s.price} ₽
-                              </option>
-                            );
-                          })}
-                        </select>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">Количество (шт.):</label>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setPosQty(prev => Math.max(1, prev - 1))}
-                              className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-slate-700 text-sm"
-                            >
-                              -
-                            </button>
-                            <input
-                              type="number"
-                              min="1"
-                              value={posQty}
-                              onChange={e => setPosQty(Math.max(1, parseInt(e.target.value) || 1))}
-                              className="w-full text-center border border-slate-200 rounded-xl py-2 font-bold text-slate-900 text-xs"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setPosQty(prev => prev + 1)}
-                              className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-slate-700 text-sm"
-                            >
-                              +
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">Цена за единицу (₽):</label>
-                          <input
-                            type="number"
-                            value={posPrice}
-                            onChange={e => setPosPrice(Number(e.target.value) || 0)}
-                            className="w-full border border-slate-200 rounded-xl p-2 font-bold text-slate-900 text-xs"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">Локация списания:</label>
-                          <select
-                            value={posPlace}
-                            onChange={e => setPosPlace(e.target.value)}
-                            className="w-full border border-slate-200 rounded-xl p-2 bg-white text-xs"
+                    {/* Фильтр: Источник заказа */}
+                    <div className="space-y-1.5">
+                      <label className="block font-semibold text-slate-700">Источник заказа:</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { id: 'all', title: 'Все источники' },
+                          { id: 'Сайт бренда', title: '🌐 Сайт бренда' },
+                          { id: 'Маркетплейс витрина', title: '🛍 vitrina.market' }
+                        ].map(src => (
+                          <button
+                            key={src.id}
+                            type="button"
+                            onClick={() => { setOrderSourceFilter(src.id); setSelectedOrderId(''); }}
+                            className={`py-2 px-2.5 rounded-xl font-bold text-xs transition border text-center ${
+                              orderSourceFilter === src.id
+                                ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
                           >
-                            <option value="Рейл 1">Рейл 1</option>
-                            <option value="Рейл 2">Рейл 2</option>
-                            <option value="Рейл 3">Рейл 3</option>
-                            <option value="Рейл 4">Рейл 4</option>
-                            <option value="Полка 1">Полка 1</option>
-                            <option value="Полка 2">Полка 2</option>
-                            <option value="Корнер 1">Корнер 1</option>
-                            <option value="Склад">Склад</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">Способ оплаты / Чек:</label>
-                          <select
-                            value={posPaymentType}
-                            onChange={e => setPosPaymentType(e.target.value)}
-                            className="w-full border border-slate-200 rounded-xl p-2 bg-white text-xs"
-                          >
-                            <option value="Терминал / Карта">Терминал / Карта</option>
-                            <option value="СБП / QR-код">СБП / QR-код</option>
-                            <option value="Наличные">Наличные</option>
-                            <option value="Перевод">Перевод</option>
-                          </select>
-                        </div>
+                            {src.title}
+                          </button>
+                        ))}
                       </div>
-
-                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex justify-between items-center font-bold">
-                        <span className="text-slate-700">Итоговая сумма:</span>
-                        <span className="text-base text-emerald-700">{(posQty * posPrice).toLocaleString('ru-RU')} ₽</span>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={!posSelectedItem || isSubmittingPos}
-                        onClick={() => {
-                          if (!posSelectedItem) {
-                            showToast('Выберите товар для операции');
-                            return;
-                          }
-                          handleExecutePosOperation({
-                            type: posActionType,
-                            item: posSelectedItem,
-                            qty: posQty,
-                            price: posPrice,
-                            place: posPlace,
-                            paymentType: posPaymentType,
-                            notes: posNotes
-                          });
-                        }}
-                        className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition text-xs shadow-xs disabled:opacity-40"
-                      >
-                        {isSubmittingPos ? 'Проведение...' : `Подтвердить: ${posActionType} (${(posQty * posPrice).toLocaleString('ru-RU')} ₽)`}
-                      </button>
                     </div>
-                  </div>
 
-                  <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-                    <h3 className="font-bold text-sm text-slate-900">🧾 Последние 5 кассовых операций</h3>
-                    <div className="divide-y divide-slate-100 text-xs">
-                      {stockOperations.slice(0, 5).map(op => (
-                        <div key={op.id} className="py-2.5 flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                  op.type === 'Продажа'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : op.type === 'Возврат'
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : op.type === 'Поставка'
-                                    ? 'bg-sky-100 text-sky-800'
-                                    : 'bg-rose-100 text-rose-800'
-                                }`}
+                    {/* Выбор оплаченного заказа */}
+                    <div className="space-y-1.5">
+                      <label className="block font-semibold text-slate-700">
+                        Выберите оплаченный заказ для выдачи:
+                      </label>
+                      {(() => {
+                        const paidOrders = orders.filter(o =>
+                          o.status === 'paid' &&
+                          (orderSourceFilter === 'all' || o.source === orderSourceFilter)
+                        );
+                        if (paidOrders.length === 0) {
+                          return (
+                            <div className="p-4 bg-slate-50 rounded-xl border border-dashed border-slate-300 text-center text-slate-500 space-y-2">
+                              <div>Нет доступных оплаченных заказов по выбранному источнику</div>
+                              <button
+                                type="button"
+                                onClick={() => setIsIntegrationGuideOpen(true)}
+                                className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-bold text-xs inline-flex items-center gap-1.5"
                               >
-                                {op.type}
+                                <span>🔌 Инструкция по приему заказов с сайтов (Tilda, InSales)</span>
+                              </button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <select
+                            value={selectedOrderId}
+                            onChange={e => {
+                              setSelectedOrderId(e.target.value);
+                              const ord = orders.find(o => o.id === e.target.value);
+                              if (ord && ord.items) {
+                                const newLocs = {};
+                                ord.items.forEach(it => {
+                                  newLocs[it.sku] = getAvailableLocationsForItem(it.brand || ord.brandName)[0]?.id || 'Рейл бренда';
+                                });
+                                setOrderItemLocations(newLocs);
+                              }
+                            }}
+                            className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold text-xs outline-none"
+                          >
+                            <option value="">-- Выберите заказ из списка --</option>
+                            {paidOrders.map(o => (
+                              <option key={o.id} value={o.id}>
+                                №{o.orderNumber || o.id} • {o.customerName || 'Покупатель'} ({o.totalAmount} ₽) • {o.source} [{o.brandName || 'Бренд'}]
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Выбранный заказ */}
+                    {(() => {
+                      const currentOrder = orders.find(o => o.id === selectedOrderId);
+                      if (!currentOrder) return null;
+
+                      return (
+                        <div className="space-y-4 pt-2 animate-in fade-in duration-150">
+                          {/* Карточка покупателя */}
+                          <div className="bg-sky-50/70 border border-sky-200 rounded-2xl p-3.5 space-y-2">
+                            <div className="flex items-center justify-between border-b border-sky-100 pb-2">
+                              <span className="font-bold text-sky-900 text-xs flex items-center gap-1.5">
+                                <span>👤 Покупатель:</span>
+                                <span className="text-slate-900">{currentOrder.customerName || 'Не указано'}</span>
                               </span>
-                              <span className="font-bold text-slate-900 truncate">
-                                {op.productName || op.sku}
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                Оплачен онлайн ({currentOrder.source})
                               </span>
                             </div>
-                            <div className="text-[11px] text-slate-400 mt-0.5">
-                              {op.timestamp} • {op.place} • Чек: {op.receiptId || '—'}
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-[11px]">
+                              <div>
+                                <span className="text-slate-400 block">Телефон:</span>
+                                {currentOrder.customerPhone && currentOrder.customerPhone !== '#ERROR!' ? (
+                                  <a href={`tel:${currentOrder.customerPhone}`} className="font-bold text-emerald-700 underline">
+                                    {currentOrder.customerPhone}
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-400 italic">Не указан</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Email:</span>
+                                {currentOrder.customerEmail ? (
+                                  <a href={`mailto:${currentOrder.customerEmail}`} className="font-medium text-sky-700 underline truncate block">
+                                    {currentOrder.customerEmail}
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-400 italic">Не указан</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Telegram:</span>
+                                {currentOrder.customerTg ? (
+                                  <a
+                                    href={`https://t.me/${currentOrder.customerTg.replace('@', '')}`}
+                                    target="_blank"
+                                    className="font-bold text-sky-600 hover:underline"
+                                  >
+                                    @{currentOrder.customerTg.replace('@', '')}
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-400 italic">Не указан</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Способ получения:</span>
+                                <span className="font-medium text-slate-800">
+                                  {currentOrder.customerAddress || 'Самовывоз из шоурума'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Дата заказа:</span>
+                                <span className="font-medium text-slate-800">
+                                  {currentOrder.createdAt ? new Date(currentOrder.createdAt).toLocaleString('ru-RU') : '—'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Комментарий:</span>
+                                <span className="font-medium text-slate-800 italic">
+                                  {currentOrder.notes || 'Без комментария'}
+                                </span>
+                              </div>
                             </div>
                           </div>
 
-                          <div className="text-right whitespace-nowrap">
-                            <div className="font-bold text-slate-900">
-                              {op.quantity} шт. × {Number(op.price || 0).toLocaleString('ru-RU')} ₽
+                          {/* Состав заказа с выбором локации списания */}
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="font-bold text-slate-800">
+                                Состав заказа ({currentOrder.items?.length || 0} поз.):
+                              </label>
+                              <span className="text-[11px] text-slate-500">
+                                Укажите, с какого рейла или полки склада списать каждую вещь:
+                              </span>
                             </div>
-                            <div className="text-[11px] text-emerald-700 font-semibold">
-                              = {Number(op.totalAmount || 0).toLocaleString('ru-RU')} ₽
+
+                            <div className="border border-slate-200 rounded-xl overflow-hidden">
+                              <table className="w-full text-left text-xs">
+                                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                                  <tr>
+                                    <th className="p-2.5">Товар</th>
+                                    <th className="p-2.5">Цвет / Разм.</th>
+                                    <th className="p-2.5 text-center">Кол-во</th>
+                                    <th className="p-2.5 text-right">Цена</th>
+                                    <th className="p-2.5 text-right">Сумма</th>
+                                    <th className="p-2.5">Локация списания</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {(currentOrder.items || []).map((item, idx) => {
+                                    const availableLocs = getAvailableLocationsForItem(item.brand || currentOrder.brandName);
+                                    const currentLoc = orderItemLocations[item.sku] || availableLocs[0]?.id || 'Рейл бренда';
+
+                                    return (
+                                      <tr key={item.sku + '-' + idx} className="hover:bg-slate-50/50">
+                                        <td className="p-2.5 font-bold text-slate-900">
+                                          <div>{item.title || item.sku}</div>
+                                          <div className="text-[10px] text-slate-400 font-mono font-normal">
+                                            {item.sku} • {item.brand || currentOrder.brandName || 'Бренд'}
+                                          </div>
+                                        </td>
+                                        <td className="p-2.5 text-slate-600">
+                                          {item.color || '—'} / {item.size || '—'}
+                                        </td>
+                                        <td className="p-2.5 text-center font-bold text-slate-900">
+                                          {item.quantity} шт.
+                                        </td>
+                                        <td className="p-2.5 text-right font-medium text-slate-700 whitespace-nowrap">
+                                          {Number(item.price || 0).toLocaleString('ru-RU')} ₽
+                                        </td>
+                                        <td className="p-2.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                          {(Number(item.quantity || 1) * Number(item.price || 0)).toLocaleString('ru-RU')} ₽
+                                        </td>
+                                        <td className="p-2.5">
+                                          <select
+                                            value={currentLoc}
+                                            onChange={e => {
+                                              const nextVal = e.target.value;
+                                              setOrderItemLocations(prev => ({ ...prev, [item.sku]: nextVal }));
+                                            }}
+                                            className="w-full border border-slate-200 rounded-lg p-1.5 bg-white text-[11px] font-medium outline-none focus:border-slate-900"
+                                          >
+                                            {availableLocs.map(loc => (
+                                              <option key={loc.id} value={loc.id}>
+                                                {loc.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+
+                          {/* Итоговая сумма */}
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex justify-between items-center font-bold">
+                            <div>
+                              <span className="text-slate-600 text-xs block">Итоговая сумма заказа:</span>
+                              <span className="text-[11px] text-slate-400 font-normal">
+                                Оплачено покупателем онлайн • Статус: {currentOrder.status}
+                              </span>
+                            </div>
+                            <span className="text-xl text-emerald-700 font-extrabold font-mono">
+                              {Number(currentOrder.totalAmount || 0).toLocaleString('ru-RU')} ₽
+                            </span>
+                          </div>
+
+                          {/* Кнопка выдачи */}
+                          <button
+                            type="button"
+                            disabled={isIssuingOrder}
+                            onClick={() => handleIssueOrder(currentOrder)}
+                            className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-bold rounded-2xl transition text-xs shadow-md disabled:opacity-40 flex items-center justify-center gap-2"
+                          >
+                            <span>{isIssuingOrder ? '⏳ Проведение списания...' : '✅ Выдать заказ #' + (currentOrder.orderNumber || currentOrder.id) + ' покупателю'}</span>
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Правая колонка: последние выданные онлайн-заказы */}
+                  <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4 text-xs">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <h3 className="font-bold text-sm text-slate-900">📦 Выданные заказы</h3>
+                      <span className="text-[11px] text-slate-400">
+                        {orders.filter(o => o.status === 'issued').length} выданных
+                      </span>
+                    </div>
+
+                    <div className="divide-y divide-slate-100 text-xs">
+                      {orders
+                        .filter(o => o.status === 'issued')
+                        .slice(0, 6)
+                        .map(ord => (
+                          <div key={ord.id} className="py-2.5 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900 truncate">
+                                №{ord.orderNumber} • {ord.customerName}
+                              </div>
+                              <div className="text-[11px] text-slate-400">
+                                {ord.issuedAt ? new Date(ord.issuedAt).toLocaleDateString('ru-RU') : '—'} • {ord.source}
+                              </div>
+                              <div className="text-[10px] text-slate-500 font-medium truncate">
+                                {(ord.items || []).map(it => `${it.title || it.sku} (${it.quantity} шт.)`).join(', ')}
+                              </div>
+                            </div>
+                            <div className="text-right whitespace-nowrap font-bold text-emerald-700">
+                              {Number(ord.totalAmount || 0).toLocaleString('ru-RU')} ₽
+                            </div>
+                          </div>
+                        ))}
+                      {orders.filter(o => o.status === 'issued').length === 0 && (
+                        <div className="text-center py-6 text-slate-400 italic">
+                          Выданных заказов пока нет
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ПОДВКЛАДКА: ВОЗВРАТ ПО ЗАКАЗАМ */}
+              {inventorySubTab === 'returns' && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-5 text-xs">
+                  <div>
+                    <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                      <span>↩️ Оформление возврата по выданным заказам</span>
+                    </h3>
+                    <p className="text-slate-500 mt-0.5 text-xs">
+                      Поиск выданного заказа, выбор позиций для возврата, 14-дневный контроль и согласование с брендами.
+                    </p>
+                  </div>
+
+                  {/* Поиск и выбор выданного заказа */}
+                  <div className="space-y-1.5">
+                    <label className="block font-semibold text-slate-700">
+                      Поиск выданного заказа (по номеру, покупателю или телефону):
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={returnOrderSearch}
+                        onChange={e => setReturnOrderSearch(e.target.value)}
+                        placeholder="Введите номер заказа, имя покупателя или телефон..."
+                        className="w-full border border-slate-200 rounded-xl p-2.5 text-xs outline-none focus:border-slate-900 pr-8"
+                      />
+                      {returnOrderSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setReturnOrderSearch('')}
+                          className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="pt-1">
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Выберите выданный заказ:
+                      </label>
+                      {(() => {
+                        const cleanS = returnOrderSearch.toLowerCase().trim();
+                        const matchingIssued = orders.filter(o => {
+                          if (o.status !== 'issued') return false;
+                          if (!cleanS) return true;
+                          return (
+                            String(o.orderNumber || '').includes(cleanS) ||
+                            String(o.id || '').toLowerCase().includes(cleanS) ||
+                            String(o.customerName || '').toLowerCase().includes(cleanS) ||
+                            String(o.customerPhone || '').includes(cleanS)
+                          );
+                        });
+
+                        if (matchingIssued.length === 0) {
+                          return (
+                            <div className="p-3 bg-slate-50 rounded-xl border border-dashed border-slate-300 text-center text-slate-500">
+                              Выданных заказов по запросу «{returnOrderSearch}» не найдено
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <select
+                            value={selectedReturnOrderId}
+                            onChange={e => {
+                              setSelectedReturnOrderId(e.target.value);
+                              setReturnSelectedItems({});
+                              setReturnBrandApprovals({});
+                              setReturnBrandPhotos({});
+                              setCompletedReturnInfo(null);
+                            }}
+                            className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold text-xs outline-none"
+                          >
+                            <option value="">-- Выберите заказ из списка выданных --</option>
+                            {matchingIssued.map(o => (
+                              <option key={o.id} value={o.id}>
+                                №{o.orderNumber || o.id} • {o.customerName} • выдан {new Date(o.issuedAt || o.createdAt).toLocaleDateString('ru-RU')} ({o.totalAmount} ₽) [{o.brandName || 'Бренд'}]
+                              </option>
+                            ))}
+                          </select>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Карточка выбранного заказа на возврат */}
+                  {(() => {
+                    const retOrder = orders.find(o => o.id === selectedReturnOrderId);
+                    if (!retOrder) return null;
+
+                    const issueDate = new Date(retOrder.issuedAt || retOrder.createdAt);
+                    const today = new Date();
+                    const diffTime = today.setHours(0,0,0,0) - new Date(issueDate).setHours(0,0,0,0);
+                    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                    const isOver14Days = diffDays > 14;
+
+                    const selectedItemsList = (retOrder.items || []).filter(it => returnSelectedItems[it.sku]);
+                    const selectedBrandNames = [...new Set(selectedItemsList.map(it => it.brand || retOrder.brandName || 'Бренд'))];
+
+                    // Проверка всех согласований брендов при >14 дней
+                    const allBrandApprovalsGranted = !isOver14Days || (
+                      selectedBrandNames.length > 0 &&
+                      selectedBrandNames.every(bName => returnBrandApprovals[bName])
+                    );
+
+                    // Проверка фото для каждого возвращаемого бренда
+                    const allBrandPhotosProvided = selectedBrandNames.length > 0 && selectedBrandNames.every(bName => !!returnBrandPhotos[bName]);
+
+                    const isReturnButtonEnabled = selectedItemsList.length > 0 && allBrandApprovalsGranted && allBrandPhotosProvided && !isProcessingReturn;
+
+                    return (
+                      <div className="space-y-4 pt-2 border-t border-slate-100 animate-in fade-in duration-150">
+                        {/* Сведения о заказе */}
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="font-bold text-sm text-slate-900">
+                              Заказ №{retOrder.orderNumber || retOrder.id}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              Покупатель: <span className="font-bold text-slate-800">{retOrder.customerName}</span> ({retOrder.customerPhone || 'тел. не указан'})
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              Дата выдачи: <span className="font-semibold text-slate-800">{issueDate.toLocaleDateString('ru-RU')}</span> • Прошло: <span className="font-bold text-slate-900">{diffDays} дн.</span> (без учета дня выдачи)
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs text-slate-400">Сумма заказа</div>
+                            <div className="text-base font-extrabold text-slate-900">
+                              {Number(retOrder.totalAmount || 0).toLocaleString('ru-RU')} ₽
                             </div>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  </div>
+
+                        {/* ПРЕДУПРЕЖДАЮЩЕЕ СООБЩЕНИЕ О 14 ДНЯХ */}
+                        {isOver14Days && (
+                          <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl space-y-2">
+                            <div className="flex items-center gap-2 text-amber-900 font-bold text-xs sm:text-sm">
+                              <span className="text-lg">⚠️</span>
+                              <span>Официальный период возврата (14 дней) истёк!</span>
+                            </div>
+                            <p className="text-amber-800 text-xs leading-relaxed">
+                              С даты выдачи заказа прошло <strong>{diffDays} дней</strong> (не считая день выдачи).
+                              Возврат товаров возможен исключительно после <strong>индивидуального согласования</strong> с каждым брендом, чьи позиции выбраны на возврат.
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Список наполнения заказа с чекбоксами */}
+                        <div className="space-y-2">
+                          <label className="font-bold text-slate-800 block">
+                            Отметьте вещи, которые возвращает покупатель:
+                          </label>
+                          <div className="border border-slate-200 rounded-xl overflow-hidden">
+                            <table className="w-full text-left text-xs">
+                              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px] font-bold">
+                                <tr>
+                                  <th className="p-2.5 text-center w-10">Возврат</th>
+                                  <th className="p-2.5">Товар</th>
+                                  <th className="p-2.5">Бренд</th>
+                                  <th className="p-2.5">Цвет / Разм.</th>
+                                  <th className="p-2.5 text-center">Кол-во</th>
+                                  <th className="p-2.5 text-right">Цена</th>
+                                  <th className="p-2.5">Куда вернуть (локация)</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(retOrder.items || []).map((item, idx) => {
+                                  const isChecked = !!returnSelectedItems[item.sku];
+                                  const availableLocs = getAvailableLocationsForItem(item.brand || retOrder.brandName);
+                                  const currentLoc = returnItemLocations[item.sku] || availableLocs[0]?.id || 'Рейл бренда';
+
+                                  return (
+                                    <tr key={item.sku + '-' + idx} className={isChecked ? 'bg-amber-50/40' : ''}>
+                                      <td className="p-2.5 text-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={isChecked}
+                                          onChange={e => {
+                                            const val = e.target.checked;
+                                            setReturnSelectedItems(prev => ({ ...prev, [item.sku]: val }));
+                                          }}
+                                          className="w-4 h-4 rounded text-slate-900 border-slate-300 focus:ring-slate-900 cursor-pointer"
+                                        />
+                                      </td>
+                                      <td className="p-2.5 font-bold text-slate-900">
+                                        <div>{item.title || item.sku}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono font-normal">
+                                          {item.sku}
+                                        </div>
+                                      </td>
+                                      <td className="p-2.5 font-semibold text-slate-700">
+                                        {item.brand || retOrder.brandName || 'Бренд'}
+                                      </td>
+                                      <td className="p-2.5 text-slate-600">
+                                        {item.color || '—'} / {item.size || '—'}
+                                      </td>
+                                      <td className="p-2.5 text-center font-bold text-slate-900">
+                                        {item.quantity} шт.
+                                      </td>
+                                      <td className="p-2.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                        {Number(item.price || 0).toLocaleString('ru-RU')} ₽
+                                      </td>
+                                      <td className="p-2.5">
+                                        <select
+                                          disabled={!isChecked}
+                                          value={currentLoc}
+                                          onChange={e => {
+                                            const nextVal = e.target.value;
+                                            setReturnItemLocations(prev => ({ ...prev, [item.sku]: nextVal }));
+                                          }}
+                                          className="w-full border border-slate-200 rounded-lg p-1.5 bg-white text-[11px] font-medium disabled:opacity-40"
+                                        >
+                                          {availableLocs.map(loc => (
+                                            <option key={loc.id} value={loc.id}>
+                                              {loc.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* БЛОК СОГЛАСОВАНИЯ С БРЕНДАМИ ПРИ > 14 ДНЕЙ */}
+                        {isOver14Days && selectedBrandNames.length > 0 && (
+                          <div className="bg-amber-50/50 border border-amber-200 rounded-2xl p-4 space-y-3">
+                            <div className="font-bold text-amber-900 text-xs">
+                              📲 Согласование возврата в Telegram с брендами:
+                            </div>
+
+                            <div className="space-y-3">
+                              {selectedBrandNames.map(bName => {
+                                const brandCard = brands.find(b => b.name === bName || b.id === bName);
+                                const brandTg = brandCard?.tgUsername?.replace('@', '') || '';
+                                const brandItems = selectedItemsList.filter(it => (it.brand || retOrder.brandName) === bName);
+                                const brandItemsText = brandItems.map(it => `• ${it.title || it.sku} (${it.size || ''} ${it.color || ''}) — ${it.quantity} шт.`).join('\n');
+
+                                const returnAgreementMsg = `Здравствуйте! По заказу №${retOrder.orderNumber || retOrder.id} (выдан ${issueDate.toLocaleDateString('ru-RU')}) покупатель обратился за возвратом. С момента выдачи прошло ${diffDays} дн. (более 14 дней).\n\nВещи вашего бренда на возврат:\n${brandItemsText}\n\nПожалуйста, согласуйте приём возврата в шоуруме.`;
+
+                                const isApproved = !!returnBrandApprovals[bName];
+
+                                return (
+                                  <div key={bName} className="p-3 bg-white border border-amber-200 rounded-xl space-y-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div className="font-bold text-slate-900 text-xs">
+                                        Бренд: «{bName}» ({brandItems.length} поз.)
+                                      </div>
+                                      {brandTg ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            try {
+                                              navigator.clipboard.writeText(returnAgreementMsg);
+                                              showToast('📋 Сообщение скопировано в буфер! Открываем диалог с брендом...');
+                                            } catch (e) {}
+                                            const tgLink = `https://t.me/${brandTg}`;
+                                            if (window.Telegram?.WebApp?.openTelegramLink) {
+                                              window.Telegram.WebApp.openTelegramLink(tgLink);
+                                            } else {
+                                              window.open(tgLink, '_blank');
+                                            }
+                                          }}
+                                          className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-lg font-bold text-xs flex items-center gap-1.5 shadow-xs transition"
+                                        >
+                                          <span>✈️</span>
+                                          <span>Перейти в @{brandTg} и скопировать текст</span>
+                                        </button>
+                                      ) : (
+                                        <span className="text-slate-400 text-[11px] italic">
+                                          Telegram юзернейм бренда не указан в карточке
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Чекбокс подтверждения */}
+                                    <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={isApproved}
+                                        onChange={e => {
+                                          const val = e.target.checked;
+                                          setReturnBrandApprovals(prev => ({ ...prev, [bName]: val }));
+                                        }}
+                                        className="w-4 h-4 rounded text-emerald-600 border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <span className="font-bold text-slate-800 text-xs">
+                                        Бренд «{bName}» подтвердил своё согласие на возврат
+                                      </span>
+                                    </label>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {!allBrandApprovalsGranted && (
+                              <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 font-bold text-[11px] flex items-center gap-2">
+                                <span>🔒</span>
+                                <span>Дальнейшие поля и кнопка подтверждения заблокированы до отметки согласия всех брендов!</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* ПРИКРЕПЛЕНИЕ ФОТО ВОЗВРАЩАЕМЫХ ВЕЩЕЙ ПО КАЖДОМУ БРЕНДУ */}
+                        <div className={`space-y-3 ${(!allBrandApprovalsGranted && isOver14Days) ? 'opacity-40 pointer-events-none' : ''}`}>
+                          <label className="font-bold text-slate-800 block text-xs">
+                            📸 Прикрепите фото возвращаемых вещей (по каждому бренду отдельно) *:
+                          </label>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {selectedBrandNames.map(bName => {
+                              const photo = returnBrandPhotos[bName];
+
+                              return (
+                                <div key={bName} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-bold text-slate-900 text-xs">
+                                      Фото вещей бренда «{bName}»:
+                                    </span>
+                                    {photo ? (
+                                      <span className="text-emerald-700 font-bold text-[10px]">✅ Фото прикреплено</span>
+                                    ) : (
+                                      <span className="text-rose-600 font-bold text-[10px]">Обязательно</span>
+                                    )}
+                                  </div>
+
+                                  {photo ? (
+                                    <div className="relative w-full h-32 rounded-xl overflow-hidden border border-slate-200 bg-black/5">
+                                      <img src={photo} alt="Return photo" className="w-full h-full object-cover" />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setReturnBrandPhotos(prev => {
+                                            const copy = { ...prev };
+                                            delete copy[bName];
+                                            return copy;
+                                          });
+                                        }}
+                                        className="absolute top-2 right-2 bg-slate-900/80 text-white w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs hover:bg-slate-900 shadow-md"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <label className="w-full h-24 border-2 border-dashed border-slate-300 hover:border-slate-400 rounded-xl flex flex-col items-center justify-center cursor-pointer bg-white transition gap-1">
+                                      <span className="text-lg">📷</span>
+                                      <span className="text-[11px] font-semibold text-slate-600">Сделать фото или выбрать из галереи</span>
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        capture="environment"
+                                        onChange={e => {
+                                          const file = e.target.files?.[0];
+                                          if (file) {
+                                            const reader = new FileReader();
+                                            reader.onload = ev => {
+                                              setReturnBrandPhotos(prev => ({ ...prev, [bName]: ev.target.result }));
+                                            };
+                                            reader.readAsDataURL(file);
+                                          }
+                                        }}
+                                        className="hidden"
+                                      />
+                                    </label>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Причина возврата и подтверждение */}
+                        <div className={`space-y-3 pt-2 ${(!allBrandApprovalsGranted && isOver14Days) ? 'opacity-40 pointer-events-none' : ''}`}>
+                          <div>
+                            <label className="block font-semibold text-slate-700 mb-1">Причина возврата / Комментарий:</label>
+                            <input
+                              type="text"
+                              value={returnReason}
+                              onChange={e => setReturnReason(e.target.value)}
+                              placeholder="Например: Не подошел размер / возврат покупателя"
+                              className="w-full border border-slate-200 rounded-xl p-2.5 text-xs outline-none"
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={!isReturnButtonEnabled}
+                            onClick={handleExecuteReturn}
+                            className="w-full py-3.5 bg-rose-600 hover:bg-rose-700 active:scale-[0.99] text-white font-bold rounded-2xl transition text-xs shadow-md disabled:opacity-40 flex items-center justify-center gap-2"
+                          >
+                            <span>{isProcessingReturn ? '⏳ Оформление возврата...' : '↩️ Подтвердить возврат (' + selectedItemsList.length + ' поз.)'}</span>
+                          </button>
+                        </div>
+
+                        {/* КАРТОЧКА ПОСЛЕ УСПЕШНОГО ВОЗВРАТА */}
+                        {completedReturnInfo && (
+                          <div className="p-4 bg-emerald-50 border-2 border-emerald-300 rounded-2xl space-y-3 animate-in zoom-in-95 duration-150">
+                            <div className="flex items-center gap-2 font-bold text-emerald-900 text-sm">
+                              <span className="text-lg">✅</span>
+                              <span>Возврат по заказу №{completedReturnInfo.orderNumber || completedReturnInfo.orderId} успешно проведён!</span>
+                            </div>
+                            <p className="text-emerald-800 text-xs">
+                              Вещи возвращены в остатки на указанные рейлы/полки склада, статус заказа переведен в «Возврат».
+                            </p>
+
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {completedReturnInfo.brands.map(bName => {
+                                const brandCard = brands.find(b => b.name === bName || b.id === bName);
+                                const brandTg = brandCard?.tgUsername?.replace('@', '') || '';
+                                const reportMsg = `↩️ Уведомление о возврате товара\nЗаказ №${completedReturnInfo.orderNumber}\nДата возврата: ${new Date().toLocaleDateString('ru-RU')}\nПокупатель: ${completedReturnInfo.customerName} (${completedReturnInfo.customerPhone})\nБренд: ${bName}\nВещи возвращены в шоурум на хранение.`;
+
+                                if (!brandTg) return null;
+                                return (
+                                  <button
+                                    key={bName}
+                                    type="button"
+                                    onClick={() => {
+                                      try {
+                                        navigator.clipboard.writeText(reportMsg);
+                                        showToast('📋 Отчет скопирован! Открываем Telegram...');
+                                      } catch (e) {}
+                                      const link = `https://t.me/${brandTg}`;
+                                      if (window.Telegram?.WebApp?.openTelegramLink) {
+                                        window.Telegram.WebApp.openTelegramLink(link);
+                                      } else {
+                                        window.open(link, '_blank');
+                                      }
+                                    }}
+                                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition"
+                                  >
+                                    <span>✈️</span>
+                                    <span>Отправить отчет бренду «{bName}» в @{brandTg}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -7338,8 +8322,8 @@
                   <div>
                     <label className="block font-semibold text-slate-700 mb-1">Роль доступа</label>
                     <select
-                      value={isOwner ? newAclRole : 'seller'}
-                      disabled={!isOwner}
+                      value={isAdminOrOwner ? newAclRole : 'seller'}
+                      disabled={!isAdminOrOwner}
                       onChange={e => setNewAclRole(e.target.value)}
                       className="w-full border border-slate-200 rounded-xl p-2.5 bg-white font-semibold"
                     >
@@ -7425,7 +8409,7 @@
                                 <span className={`px-2.5 py-1 rounded-full text-[11px] border ${ROLES.owner.badge}`}>
                                   👑 Владелец (Неизменяемый)
                                 </span>
-                              ) : isOwner ? (
+                              ) : isAdminOrOwner ? (
                                 <div className="space-y-1.5">
                                   <select
                                     value={u.role === 'user' ? 'seller' : u.role}
@@ -7466,7 +8450,7 @@
                             <td className="p-3 text-right">
                               {lockedOwner ? (
                                 <span className="text-[11px] text-slate-400 italic">Защищено</span>
-                              ) : (isOwner || (authState.role === 'admin' && u.role === 'user')) ? (
+                              ) : (isOwner || (authState.role === 'admin' && u.role !== 'owner' && u.role !== 'admin')) ? (
                                 <button
                                   onClick={() => handleRemoveAclUser(u.id)}
                                   className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-semibold text-[11px]"
@@ -9010,6 +9994,395 @@
                       Закрыть
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* МОДАЛКА: БЕЗОПАСНЫЙ ЭКСПОРТ EXCEL / ФАЙЛОВ ДЛЯ TELEGRAM MINI APP */}
+          {exportModal.isOpen && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[85]">
+              <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 max-w-md w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto text-xs">
+                {/* Шапка модалки */}
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center text-xl flex-shrink-0">
+                      📄
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 leading-tight">{exportModal.title}</h3>
+                      <p className="text-[11px] text-slate-500 font-medium">Адаптировано для Telegram Mini App</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setExportModal(prev => ({ ...prev, isOpen: false })); }}
+                    className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold transition"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Информационная карточка о файле */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-1.5 text-slate-700">
+                  <div className="font-semibold text-slate-900 flex items-center justify-between">
+                    <span className="truncate pr-2 font-mono text-[11px]">{exportModal.filename}</span>
+                    <span className="text-[10px] text-slate-400 shrink-0">
+                      {exportModal.blob ? `~${Math.round(exportModal.blob.size / 1024) || 1} КБ` : ''}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {exportModal.subtitle || 'Файл готов к отправке и скачиванию.'}
+                  </p>
+                </div>
+
+                {/* Варианты экспорта */}
+                <div className="space-y-2 pt-1">
+                  {/* Кнопка 1: Отправка в диалог с ботом Telegram */}
+                  <button
+                    type="button"
+                    disabled={isSendingExportTelegram}
+                    onClick={handleSendExportToTelegram}
+                    className="w-full py-3.5 px-4 bg-sky-600 hover:bg-sky-500 active:scale-[0.98] text-white font-bold rounded-2xl text-xs transition flex items-center justify-between shadow-sm"
+                  >
+                    <div className="flex items-center gap-2.5 text-left">
+                      <span className="text-lg">✈️</span>
+                      <div>
+                        <div className="font-bold">Отправить файл в Telegram-бот</div>
+                        <div className="text-[10px] font-normal text-sky-100">
+                          Файл придет документом в ваш диалог с ботом
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-xs">{isSendingExportTelegram ? '⏳...' : '→'}</span>
+                  </button>
+
+                  {/* Кнопка 2: Системное меню iOS Share */}
+                  <button
+                    type="button"
+                    onClick={handleShareExportViaIOS}
+                    className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white font-bold rounded-2xl text-xs transition flex items-center justify-between shadow-sm"
+                  >
+                    <div className="flex items-center gap-2.5 text-left">
+                      <span className="text-base">📱</span>
+                      <div>
+                        <div>Поделиться / Сохранить в «Файлы»</div>
+                        <div className="text-[10px] font-normal text-slate-300">
+                          Системное меню iOS / Android (AirDrop, Файлы)
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-xs">→</span>
+                  </button>
+
+                  {/* Кнопка 3: Скачать напрямую */}
+                  <button
+                    type="button"
+                    onClick={handleDirectExportBrowserDownload}
+                    className="w-full py-2.5 px-4 rounded-xl text-[11px] font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition flex items-center justify-center gap-1.5"
+                  >
+                    <span>💾 Скачать напрямую (для браузера на ПК)</span>
+                  </button>
+                </div>
+
+                {/* Кнопка выхода */}
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setExportModal(prev => ({ ...prev, isOpen: false })); }}
+                    className="w-full py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs transition"
+                  >
+                    Закрыть окно
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА: СТЕЛЛАЖИ И ПОЛКИ СКЛАДА (ТОЛЬКО АДМИН И ВЛАДЕЛЕЦ) */}
+          {isWarehouseModalOpen && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[85]">
+              <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 max-w-lg w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto text-xs">
+                {/* Шапка модалки */}
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center text-xl flex-shrink-0">
+                      ⚙️
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 leading-tight">Стеллажи и полки склада</h3>
+                      <p className="text-[11px] text-slate-500 font-medium">
+                        Стеллажи нумеруются буквами (A, B, C...), полки — цифрами (1, 2, 3...)
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setIsWarehouseModalOpen(false); }}
+                    className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold transition"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Список текущих стеллажей */}
+                <div className="space-y-2.5">
+                  <label className="font-bold text-slate-800 block text-xs">
+                    Активные стеллажи склада ({warehouseRacks.length}):
+                  </label>
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {warehouseRacks.map((rack, idx) => (
+                      <div
+                        key={rack.rack + '-' + idx}
+                        className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white font-extrabold flex items-center justify-center text-sm">
+                            {rack.rack}
+                          </div>
+                          <div>
+                            <div className="font-bold text-slate-900 text-xs">
+                              {rack.name || `Стеллаж ${rack.rack}`}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              Полок: 1 .. {rack.shelves || 4}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newShelves = Math.max(1, (Number(rack.shelves) || 4) - 1);
+                                setWarehouseRacks(prev =>
+                                  prev.map((r, i) => i === idx ? { ...r, shelves: newShelves } : r)
+                                );
+                              }}
+                              className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 font-bold text-xs"
+                            >
+                              -
+                            </button>
+                            <span className="font-bold text-slate-800 px-2 text-xs">
+                              {rack.shelves || 4} полки
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newShelves = Math.min(20, (Number(rack.shelves) || 4) + 1);
+                                setWarehouseRacks(prev =>
+                                  prev.map((r, i) => i === idx ? { ...r, shelves: newShelves } : r)
+                                );
+                              }}
+                              className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 font-bold text-xs"
+                            >
+                              +
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (confirm(`Удалить стеллаж ${rack.rack}?`)) {
+                                setWarehouseRacks(prev => prev.filter((_, i) => i !== idx));
+                              }
+                            }}
+                            className="text-rose-500 hover:text-rose-700 p-1 font-bold text-xs"
+                            title="Удалить стеллаж"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Форма добавления нового стеллажа */}
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
+                  <label className="font-bold text-slate-900 block text-xs">
+                    + Добавить новый стеллаж на склад:
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <span className="text-[10px] text-slate-400 block mb-0.5">Буква (A, B, C...)</span>
+                      <input
+                        type="text"
+                        maxLength={2}
+                        value={newRackLetter}
+                        onChange={e => setNewRackLetter(e.target.value.toUpperCase().trim())}
+                        placeholder="Напр. E"
+                        className="w-full uppercase font-bold text-center border border-slate-200 rounded-xl p-2 bg-white text-xs outline-none"
+                      />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-400 block mb-0.5">Кол-во полок (1-20)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={newRackShelves}
+                        onChange={e => setNewRackShelves(Math.max(1, Math.min(20, parseInt(e.target.value) || 4)))}
+                        className="w-full font-bold text-center border border-slate-200 rounded-xl p-2 bg-white text-xs outline-none"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!newRackLetter) {
+                            showToast('Укажите букву стеллажа');
+                            return;
+                          }
+                          if (warehouseRacks.some(r => r.rack === newRackLetter)) {
+                            showToast(`Стеллаж ${newRackLetter} уже существует!`);
+                            return;
+                          }
+                          const newObj = {
+                            rack: newRackLetter,
+                            name: `Стеллаж ${newRackLetter}`,
+                            shelves: newRackShelves || 4,
+                            updatedAt: new Date().toISOString()
+                          };
+                          setWarehouseRacks(prev => [...prev, newObj]);
+                          setNewRackLetter('');
+                          setNewRackShelves(4);
+                          showToast(`Стеллаж ${newRackLetter} добавлен!`);
+                        }}
+                        className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition"
+                      >
+                        + Добавить
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Кнопки сохранения и выхода */}
+                <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isSavingWarehouse}
+                    onClick={() => handleSaveWarehouseRacks(warehouseRacks)}
+                    className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-1.5"
+                  >
+                    <span>{isSavingWarehouse ? '⏳ Сохранение...' : '💾 Сохранить в Google Таблицу'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setIsWarehouseModalOpen(false); }}
+                    className="py-3 px-4 border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs transition"
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* МОДАЛКА: ИНСТРУКЦИЯ ПОДКЛЮЧЕНИЯ ЗАКАЗОВ (TILDA, INSALES, VITRINA.MARKET) */}
+          {isIntegrationGuideOpen && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[85]">
+              <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 max-w-lg w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto text-xs">
+                {/* Шапка модалки */}
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-700 flex items-center justify-center text-xl flex-shrink-0">
+                      🔌
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 leading-tight">Подключение заказов с сайтов</h3>
+                      <p className="text-[11px] text-slate-500 font-medium">Tilda, InSales, vitrina.market, МойСклад и 1С</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setIsIntegrationGuideOpen(false); }}
+                    className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold transition"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Скопировать Webhook URL */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2">
+                  <label className="font-bold text-slate-900 block text-xs">
+                    Ваш универсальный Webhook URL для приема оплаченных заказов:
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      readOnly
+                      value={`${gasUrl}?action=webhookOrder&apiKey=${gasApiKey}`}
+                      className="w-full bg-white border border-slate-200 rounded-xl p-2 font-mono text-[10px] text-slate-700 select-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${gasUrl}?action=webhookOrder&apiKey=${gasApiKey}`);
+                        showToast('📋 Webhook URL скопирован в буфер обмена!');
+                      }}
+                      className="px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold shrink-0 text-xs transition"
+                    >
+                      Копировать
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    Заказы, приходящие на этот адрес, автоматически попадают на лист <strong>Orders</strong> со статусом <strong>paid</strong> и мгновенно доступны в «Быстрой кассе».
+                  </p>
+                </div>
+
+                {/* Пошаговая инструкция */}
+                <div className="space-y-3">
+                  {/* Тильда */}
+                  <div className="p-3 bg-white border border-slate-200 rounded-2xl space-y-1.5">
+                    <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                      <span>🌐</span>
+                      <span>1. Как подключить сайт бренда на Tilda:</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 text-[11px] leading-relaxed">
+                      <li>В личном кабинете Tilda откройте: <strong>Настройки сайта → Формы → Webhook</strong>.</li>
+                      <li>Вставьте скопированный <strong>Webhook URL</strong> в поле «Webhook URL».</li>
+                      <li>В расширенных настройках обязательно включите галочку: <strong>«Передавать данные только после успешной оплаты в корзине»</strong>.</li>
+                      <li>Нажмите <strong>«Сохранить»</strong> и привяжите данный Webhook к блоку корзины на страницах каталога.</li>
+                    </ol>
+                  </div>
+
+                  {/* InSales */}
+                  <div className="p-3 bg-white border border-slate-200 rounded-2xl space-y-1.5">
+                    <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                      <span>🛍</span>
+                      <span>2. Как подключить InSales:</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 text-[11px] leading-relaxed">
+                      <li>В панели InSales перейдите: <strong>Настройки → Webhook → Добавить webhook</strong>.</li>
+                      <li>Событие: выберите <strong>«Оплата заказа»</strong> (order/paid).</li>
+                      <li>URL: вставьте скопированный <strong>Webhook URL</strong>.</li>
+                      <li>Формат: <strong>JSON</strong>.</li>
+                    </ol>
+                  </div>
+
+                  {/* vitrina.market / REST API */}
+                  <div className="p-3 bg-white border border-slate-200 rounded-2xl space-y-1.5">
+                    <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                      <span>⚡️</span>
+                      <span>3. vitrina.market или прямая отправка REST API:</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600">
+                      Отправляйте POST-запрос с JSON-телом, содержащим поля: <code>orderNumber</code>, <code>source</code>, <code>brandName</code>, <code>customerName</code>, <code>customerPhone</code>, <code>items</code> (массив товаров со sku, ценой и количеством), <code>totalAmount</code>.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Кнопка закрытия */}
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => { haptic.light(); setIsIntegrationGuideOpen(false); }}
+                    className="w-full py-2.5 border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-xs transition"
+                  >
+                    Понятно, закрыть инструкцию
+                  </button>
                 </div>
               </div>
             </div>

@@ -29,6 +29,8 @@ var SHEET_LOGS = "Audit_Logs";
 var SHEET_NOMENCLATURE = "Nomenclature";
 var SHEET_STOCK = "Stock";
 var SHEET_OPERATIONS = "Stock_Operations";
+var SHEET_ORDERS = "Orders";
+var SHEET_WAREHOUSE_CONFIG = "Warehouse_Config";
 
 // Заголовки столбцов: Бренды и рейлы
 var BRAND_HEADERS = [
@@ -127,10 +129,41 @@ var OPERATIONS_HEADERS = [
   "notes"
 ];
 
+// Заголовки столбцов: Поступившие и выданные заказы (Тильда, inSales, витрина)
+var ORDER_HEADERS = [
+  "id",
+  "orderNumber",
+  "source",
+  "brandId",
+  "brandName",
+  "customerName",
+  "customerPhone",
+  "customerEmail",
+  "customerTg",
+  "customerAddress",
+  "itemsJson",
+  "totalAmount",
+  "status",
+  "paymentStatus",
+  "paymentMethod",
+  "createdAt",
+  "issuedAt",
+  "returnedAt",
+  "returnReason",
+  "returnPhotos",
+  "notes"
+];
+
+// Заголовки столбцов: Структура склада (Стеллажи и Полки)
+var RACK_HEADERS = [
+  "rack",
+  "name",
+  "shelves",
+  "updatedAt"
+];
+
 /**
- * Инициализация и форматирование всех 6 листов таблицы.
- * Запустите эту функцию один раз вручную в редакторе Google Таблицы,
- * либо она выполнится автоматически при первом запросе к API.
+ * Инициализация и форматирование всех листов таблицы.
  */
 function initSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -140,11 +173,105 @@ function initSheets() {
   getOrCreateSheet(ss, SHEET_NOMENCLATURE, NOMENCLATURE_HEADERS, "#1e3a8a");
   getOrCreateSheet(ss, SHEET_STOCK, STOCK_HEADERS, "#065f46");
   getOrCreateSheet(ss, SHEET_OPERATIONS, OPERATIONS_HEADERS, "#701a75");
+  var sheetOrders = getOrCreateSheet(ss, SHEET_ORDERS, ORDER_HEADERS, "#0284c7");
+  var sheetRacks = getOrCreateSheet(ss, SHEET_WAREHOUSE_CONFIG, RACK_HEADERS, "#475569");
+  
+  if (sheetRacks.getLastRow() <= 1) {
+    sheetRacks.appendRow(["A", "Стеллаж A", 4, new Date().toISOString()]);
+    sheetRacks.appendRow(["B", "Стеллаж B", 4, new Date().toISOString()]);
+    sheetRacks.appendRow(["C", "Стеллаж C", 4, new Date().toISOString()]);
+    sheetRacks.appendRow(["D", "Стеллаж D", 4, new Date().toISOString()]);
+  }
+  
+  // Добавляем тестовые оплаченные заказы, если лист пустой
+  if (sheetOrders.getLastRow() <= 1) {
+    var nowIso = new Date().toISOString();
+    var sixteenDaysAgo = new Date(new Date().getTime() - 16 * 24 * 3600 * 1000).toISOString();
+    
+    sheetOrders.appendRow([
+      "ORD-10491",
+      "10491",
+      "Сайт бренда",
+      "",
+      "SM",
+      "Анна Кузнецова",
+      "'+7 999 123-45-67",
+      "kuznetsova@example.com",
+      "@anna_kuzn",
+      "Самовывоз из шоурума",
+      JSON.stringify([
+        { sku: "T-001", title: "Футболка Oversize Heavyweight", brand: "SM", color: "Черный", size: "L", quantity: 1, price: 3900, amount: 3900 },
+        { sku: "H-002", title: "Худи с принтом Dark Future", brand: "SM", color: "Серый", size: "M", quantity: 1, price: 8500, amount: 8500 }
+      ]),
+      12400,
+      "paid",
+      "paid",
+      "СБП / Онлайн",
+      nowIso,
+      "",
+      "",
+      "",
+      "",
+      "Самовывоз сегодня до 20:00"
+    ]);
+
+    sheetOrders.appendRow([
+      "ORD-10492",
+      "10492",
+      "Маркетплейс витрина",
+      "",
+      "SM",
+      "Михаил Романов",
+      "'+7 916 555-44-33",
+      "romanov@vitrina.market",
+      "@mikhail_rom",
+      "Шоурум, корнер SM",
+      JSON.stringify([
+        { sku: "C-003", title: "Кепка с вышивкой Logo", brand: "SM", color: "Бежевый", size: "ONE", quantity: 1, price: 2800, amount: 2800 }
+      ]),
+      2800,
+      "paid",
+      "paid",
+      "Карта онлайн (vitrina.market)",
+      nowIso,
+      "",
+      "",
+      "",
+      "",
+      "Заказ vitrina.market #V-8821"
+    ]);
+
+    sheetOrders.appendRow([
+      "ORD-10350",
+      "10350",
+      "Сайт бренда",
+      "",
+      "SM",
+      "Екатерина Смирнова",
+      "'+7 903 777-88-99",
+      "smirnova@mail.ru",
+      "@katya_smirnova",
+      "Шоурум",
+      JSON.stringify([
+        { sku: "T-001", title: "Футболка Oversize Heavyweight", brand: "SM", color: "Черный", size: "M", quantity: 1, price: 3900, amount: 3900 }
+      ]),
+      3900,
+      "issued",
+      "paid",
+      "СБП",
+      sixteenDaysAgo,
+      sixteenDaysAgo,
+      "",
+      "",
+      "",
+      "Выдан покупателю в зале"
+    ]);
+  }
   
   // Настраиваем триггер фоновой проверки каждые 5 минут
   setupInventorySyncTrigger();
   
-  return "Все 6 листов успешно инициализированы и настроен фоновый триггер 5 мин!";
+  return "Все 8 листов успешно инициализированы и настроен фоновый триггер 5 мин!";
 }
 
 /**
@@ -255,16 +382,15 @@ function normalizeAclUsersSheet(sheet) {
         hasUpdates = true;
       }
       
-      // Авто-привязка ID для social_market_ru
+      // Авто-привязка ID для social_market_ru (без принуждения роли)
       if (uClean === "social_market_ru" || pClean === "79055663356" || idClean === "5587182742") {
-        r[1] = "social_market_ru";
-        r[2] = "+7 905 566 3356";
-        r[3] = "SM Account";
-        r[4] = "admin";
+        if (!r[1]) { r[1] = "social_market_ru"; hasUpdates = true; }
+        if (!r[2]) { r[2] = "+7 905 566 3356"; hasUpdates = true; }
+        if (!r[3]) { r[3] = "SM Account"; hasUpdates = true; }
+        if (!r[4]) { r[4] = "brand"; hasUpdates = true; }
         r[5] = false;
-        if (!r[6] || r[6] === "5587182742") r[6] = "2026-10-22 00:00:00";
-        r[7] = "5587182742";
-        hasUpdates = true;
+        if (!r[6] || r[6] === "5587182742") { r[6] = "2026-10-22 00:00:00"; hasUpdates = true; }
+        if (!r[7]) { r[7] = "5587182742"; hasUpdates = true; }
       }
       // Восстановление порядка для tvoyaddoma
       else if (uClean === "tvoyaddoma" || pClean === "79266011608") {
@@ -590,56 +716,25 @@ function handleCheckUserAccess(ss, params) {
     matchedRowIndex = sheetAcl.getLastRow();
   }
   
-  // Экстренная гарантия админа @social_market_ru
-  if (!matchedUser && (username === "social_market_ru" || phone === "79055663356" || tgUserId === "5587182742")) {
-    matchedUser = {
-      id: "u-sm-admin",
-      username: "social_market_ru",
-      phone: "+7 905 566 3356",
-      name: "SM Account",
-      role: "admin",
-      immutable: false,
-      addedAt: "2026-10-22 00:00:00",
-      tgUserId: "5587182742",
-      brandId: ""
-    };
-    var smRow = [];
-    for (var sc = 0; sc < ACL_HEADERS.length; sc++) {
-      smRow.push(matchedUser[ACL_HEADERS[sc]] || "");
-    }
-    sheetAcl.appendRow(smRow);
-    matchedRowIndex = sheetAcl.getLastRow();
-  }
-  
   // Пользователь авторизован
   if (matchedUser) {
     var hasRowUpdates = false;
     
-    if (username === "social_market_ru" || matchedUser.username === "social_market_ru" || phone === "79055663356" || tgUserId === "5587182742") {
-      matchedUser.username = "social_market_ru";
-      matchedUser.phone = "+7 905 566 3356";
-      matchedUser.name = "SM Account";
-      matchedUser.role = "admin";
-      matchedUser.tgUserId = "5587182742";
-      matchedUser.immutable = false;
+    if (tgUserId && (!matchedUser.tgUserId || cleanTgId(matchedUser.tgUserId) === "")) {
+      matchedUser.tgUserId = tgUserId;
       hasRowUpdates = true;
-    } else {
-      if (tgUserId && (!matchedUser.tgUserId || cleanTgId(matchedUser.tgUserId) === "")) {
-        matchedUser.tgUserId = tgUserId;
-        hasRowUpdates = true;
-      }
-      if (phone && (!matchedUser.phone || cleanPhone(matchedUser.phone) === "")) {
-        matchedUser.phone = params.phone || ("+" + phone);
-        hasRowUpdates = true;
-      }
-      if (username && (!matchedUser.username || cleanUsername(matchedUser.username) === "")) {
-        matchedUser.username = username;
-        hasRowUpdates = true;
-      }
-      if (name && name !== "Сотрудник" && (!matchedUser.name || matchedUser.name === matchedUser.username)) {
-        matchedUser.name = name;
-        hasRowUpdates = true;
-      }
+    }
+    if (phone && (!matchedUser.phone || cleanPhone(matchedUser.phone) === "")) {
+      matchedUser.phone = params.phone || ("+" + phone);
+      hasRowUpdates = true;
+    }
+    if (username && (!matchedUser.username || cleanUsername(matchedUser.username) === "")) {
+      matchedUser.username = username;
+      hasRowUpdates = true;
+    }
+    if (name && name !== "Сотрудник" && (!matchedUser.name || matchedUser.name === matchedUser.username)) {
+      matchedUser.name = name;
+      hasRowUpdates = true;
     }
     
     if (hasRowUpdates && matchedRowIndex > 0) {
@@ -720,6 +815,302 @@ function updateBrandStockCount(sheetBrands, sheetStock, brandId, lastDeliveryDat
   } catch (e) {
     // Тихо игнорируем
   }
+}
+
+/**
+ * Атомарное проведение одной складской/кассовой операции (продажа, возврат, списание, перемещение).
+ */
+function executeSingleStockOperation(ss, sheetOps, sheetStk, sheetBrands, op) {
+  var opId = op.id || ("OP-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6));
+  var opTimestamp = op.timestamp || new Date().toISOString();
+  var opType = op.type; // Продажа, Поставка, Возврат, Списание, Перемещение, Инвентаризация
+  var opSku = String(op.sku).trim();
+  var opBarcode = String(op.barcode || "").trim();
+  var opBrandId = String(op.brandId || "").trim();
+  var opBrandName = String(op.brandName || "").trim();
+  var opPlace = String(op.place || "Рейл бренда").trim();
+  var opQty = Number(op.quantity) || 1;
+  var opPrice = Number(op.price) || 0;
+  var opTotal = Number(op.totalAmount) || (opQty * opPrice);
+  var authorName = op.authorName || "Кассир";
+  var authorTgId = cleanTgId(op.authorTgId);
+  var receiptId = op.receiptId || "";
+  var notes = op.notes || "";
+  
+  // 1. Запись в журнал операций Stock_Operations
+  var opRow = [
+    opId,
+    opTimestamp,
+    opType,
+    opSku,
+    opBarcode,
+    opBrandId,
+    opBrandName,
+    opQty,
+    opPrice,
+    opTotal,
+    opPlace,
+    authorName,
+    authorTgId,
+    receiptId,
+    notes
+  ];
+  sheetOps.appendRow(opRow);
+  
+  // 2. Обновление остатков на листе Stock
+  var stkLastRow = sheetStk.getLastRow();
+  var foundStkRow = 0;
+  var currQty = 0;
+  var currReserved = 0;
+  
+  if (stkLastRow > 1) {
+    var stkData = sheetStk.getRange(2, 1, stkLastRow - 1, STOCK_HEADERS.length).getValues();
+    for (var s = 0; s < stkData.length; s++) {
+      var rowSku = String(stkData[s][0]).trim();
+      var rowPlace = String(stkData[s][3]).trim();
+      if (rowSku === opSku && rowPlace === opPlace) {
+        foundStkRow = s + 2;
+        currQty = Number(stkData[s][4]) || 0;
+        currReserved = Number(stkData[s][5]) || 0;
+        if (!opBarcode && stkData[s][1]) opBarcode = String(stkData[s][1]);
+        if (!opBrandId && stkData[s][2]) opBrandId = String(stkData[s][2]);
+        break;
+      }
+    }
+  }
+  
+  var newQty = currQty;
+  if (opType === "Продажа" || opType === "Списание") {
+    newQty = Math.max(0, currQty - Math.abs(opQty));
+  } else if (opType === "Поставка" || opType === "Возврат") {
+    newQty = currQty + Math.abs(opQty);
+  } else if (opType === "Инвентаризация") {
+    newQty = Math.max(0, Math.abs(opQty));
+  } else if (opType === "Перемещение") {
+    newQty = Math.max(0, currQty - Math.abs(opQty));
+    var targetPlace = String(op.targetPlace || "Склад").trim();
+    var targetFoundRow = 0;
+    var targetCurrQty = 0;
+    if (stkLastRow > 1) {
+      var allStk = sheetStk.getRange(2, 1, stkLastRow - 1, STOCK_HEADERS.length).getValues();
+      for (var t = 0; t < allStk.length; t++) {
+        if (String(allStk[t][0]).trim() === opSku && String(allStk[t][3]).trim() === targetPlace) {
+          targetFoundRow = t + 2;
+          targetCurrQty = Number(allStk[t][4]) || 0;
+          break;
+        }
+      }
+    }
+    var newTargetQty = targetCurrQty + Math.abs(opQty);
+    var targetAvail = Math.max(0, newTargetQty);
+    if (targetFoundRow > 0) {
+      sheetStk.getRange(targetFoundRow, 5, 1, 4).setValues([[newTargetQty, 0, targetAvail, new Date().toISOString()]]);
+    } else {
+      sheetStk.appendRow([opSku, opBarcode, opBrandId, targetPlace, newTargetQty, 0, targetAvail, new Date().toISOString()]);
+    }
+  }
+  
+  var newAvail = Math.max(0, newQty - currReserved);
+  var nowIso = new Date().toISOString();
+  
+  if (foundStkRow > 0) {
+    sheetStk.getRange(foundStkRow, 5, 1, 4).setValues([[newQty, currReserved, newAvail, nowIso]]);
+  } else if (newQty > 0 || opType === "Возврат" || opType === "Поставка") {
+    sheetStk.appendRow([opSku, opBarcode, opBrandId, opPlace, newQty, currReserved, newAvail, nowIso]);
+  }
+  
+  // 3. Синхронизируем карточку бренда в Brands
+  if (opBrandId) {
+    updateBrandStockCount(sheetBrands, sheetStk, opBrandId);
+  }
+  
+  return {
+    opId: opId,
+    newQty: newQty,
+    available: newAvail
+  };
+}
+
+/**
+ * Парсер входящих заказов из Тильды, InSales, vitrina.market или универсального REST API.
+ */
+function parseIncomingOrder(payload, queryParams) {
+  var isPaid = false;
+  var orderId = "";
+  var orderNumber = "";
+  var source = "Сайт бренда";
+  var brandId = "";
+  var brandName = "";
+  var customerName = "";
+  var customerPhone = "";
+  var customerEmail = "";
+  var customerTg = "";
+  var customerAddress = "";
+  var items = [];
+  var totalAmount = 0;
+  var paymentMethod = "";
+  var notes = "";
+  
+  var qSource = (queryParams && queryParams.source) ? queryParams.source : "";
+  if (qSource === "vitrina" || qSource === "vitrina_market" || payload.source === "vitrina_market" || payload.source === "Маркетплейс витрина") {
+    source = "Маркетплейс витрина";
+  }
+  
+  // 1. Tilda Webhook format
+  if (payload.payment || payload.paymentid || (queryParams && queryParams.source === "tilda")) {
+    var p = payload.payment;
+    if (typeof p === "string") {
+      try { p = JSON.parse(p); } catch(e) { p = {}; }
+    } else if (!p) {
+      p = {};
+    }
+    
+    orderId = p.orderid || payload.orderid || ("T-" + new Date().getTime());
+    orderNumber = String(p.orderid || payload.orderid || orderId);
+    totalAmount = Number(p.amount || payload.amount || 0);
+    paymentMethod = p.systmpayment || payload.systmpayment || "Тильда Эквайринг";
+    customerName = payload.name || payload.FIO || payload.Name || "";
+    customerPhone = payload.phone || payload.Phone || "";
+    customerEmail = payload.email || payload.Email || "";
+    customerAddress = payload.delivery || payload.address || payload.delivery_address || "Шоурум";
+    notes = payload.comment || payload.notes || "";
+    
+    // В Тильде оплаченный заказ определяется наличием payment
+    isPaid = true;
+    
+    var prods = p.products || payload.products;
+    if (typeof prods === "string") {
+      try { prods = JSON.parse(prods); } catch(e) { prods = []; }
+    }
+    if (Array.isArray(prods)) {
+      for (var pi = 0; pi < prods.length; pi++) {
+        var pr = prods[pi];
+        var itemColor = "";
+        var itemSize = "";
+        if (Array.isArray(pr.options)) {
+          for (var opti = 0; opti < pr.options.length; opti++) {
+            var opt = pr.options[opti];
+            if (/цвет|color/i.test(opt.option)) itemColor = opt.variant;
+            if (/размер|size/i.test(opt.option)) itemSize = opt.variant;
+          }
+        }
+        items.push({
+          sku: pr.sku || ("ITEM-" + (pi + 1)),
+          title: pr.name || pr.title || "Товар",
+          brand: pr.brand || brandName || "SM",
+          color: itemColor || pr.color || "—",
+          size: itemSize || pr.size || "—",
+          quantity: Number(pr.quantity) || 1,
+          price: Number(pr.price) || 0,
+          amount: Number(pr.amount) || ((Number(pr.quantity) || 1) * (Number(pr.price) || 0))
+        });
+      }
+    }
+  }
+  // 2. InSales Webhook format
+  else if (payload.order_lines || payload.financial_status || (queryParams && queryParams.source === "insales")) {
+    orderId = String(payload.id || payload.number || ("INS-" + new Date().getTime()));
+    orderNumber = String(payload.number || payload.id || orderId);
+    totalAmount = Number(payload.total_price || 0);
+    paymentMethod = payload.payment_title || "InSales";
+    isPaid = (payload.financial_status === "paid");
+    if (payload.client) {
+      customerName = payload.client.name || payload.client.surname || "";
+      customerPhone = payload.client.phone || "";
+      customerEmail = payload.client.email || "";
+    }
+    customerAddress = payload.delivery_description || "Шоурум";
+    notes = payload.comment || "";
+    
+    if (Array.isArray(payload.order_lines)) {
+      for (var ili = 0; ili < payload.order_lines.length; ili++) {
+        var line = payload.order_lines[ili];
+        items.push({
+          sku: line.sku || ("INS-ITEM-" + (ili + 1)),
+          title: line.title || "Товар",
+          brand: brandName || "SM",
+          color: line.color || "—",
+          size: line.size || "—",
+          quantity: Number(line.quantity) || 1,
+          price: Number(line.sale_price || line.full_sale_price || 0),
+          amount: Number(line.total_price || 0)
+        });
+      }
+    }
+  }
+  // 3. Universal JSON format (vitrina.market / МойСклад / REST API)
+  else {
+    orderId = String(payload.orderId || payload.id || ("ORD-" + new Date().getTime()));
+    orderNumber = String(payload.orderNumber || payload.number || orderId);
+    if (payload.source) source = payload.source;
+    brandId = payload.brandId || "";
+    brandName = payload.brandName || payload.brand || "";
+    if (payload.customer) {
+      customerName = payload.customer.name || "";
+      customerPhone = payload.customer.phone || "";
+      customerEmail = payload.customer.email || "";
+      customerTg = payload.customer.tg || payload.customer.telegram || "";
+      customerAddress = payload.customer.address || "Шоурум";
+    } else {
+      customerName = payload.customerName || "";
+      customerPhone = payload.customerPhone || "";
+      customerEmail = payload.customerEmail || "";
+      customerTg = payload.customerTg || "";
+      customerAddress = payload.customerAddress || "Шоурум";
+    }
+    items = Array.isArray(payload.items) ? payload.items : [];
+    totalAmount = Number(payload.totalAmount || payload.amount || 0);
+    if (totalAmount === 0 && items.length > 0) {
+      for (var tti = 0; tti < items.length; tti++) {
+        totalAmount += (Number(items[tti].price) || 0) * (Number(items[tti].quantity) || 1);
+      }
+    }
+    paymentMethod = payload.paymentMethod || "Онлайн оплата";
+    notes = payload.notes || "";
+    isPaid = (payload.paymentStatus === "paid" || payload.status === "paid" || payload.isPaid === true);
+  }
+  
+  if (customerPhone && String(customerPhone).trim().charAt(0) === "+") {
+    customerPhone = "'" + String(customerPhone).trim();
+  }
+  
+  if (items.length === 0 && totalAmount > 0) {
+    items.push({
+      sku: "ORD-ITEM",
+      title: "Заказ " + orderNumber,
+      brand: brandName || "SM",
+      color: "—",
+      size: "—",
+      quantity: 1,
+      price: totalAmount,
+      amount: totalAmount
+    });
+  }
+  
+  return {
+    id: orderId,
+    orderNumber: orderNumber,
+    source: source,
+    brandId: brandId,
+    brandName: brandName,
+    customerName: customerName,
+    customerPhone: customerPhone,
+    customerEmail: customerEmail,
+    customerTg: customerTg,
+    customerAddress: customerAddress,
+    itemsJson: JSON.stringify(items),
+    totalAmount: totalAmount,
+    status: isPaid ? "paid" : "pending",
+    paymentStatus: isPaid ? "paid" : "unpaid",
+    paymentMethod: paymentMethod,
+    createdAt: new Date().toISOString(),
+    issuedAt: "",
+    returnedAt: "",
+    returnReason: "",
+    returnPhotos: "",
+    notes: notes,
+    isPaid: isPaid
+  };
 }
 
 /**
@@ -1056,6 +1447,12 @@ function doGet(e) {
       return createJsonResponse(authResult);
     }
     
+    // 3.1. Ручная или автоматическая инициализация листов
+    if (action === "initSheets") {
+      var initMsg = initSheets();
+      return createJsonResponse({ success: true, message: initMsg });
+    }
+    
     // 4. Загрузка всех таблиц с разделением прав (бренд видит только свой ассортимент)
     var sheetBrands = getOrCreateSheet(ss, SHEET_BRANDS, BRAND_HEADERS, "#0f172a");
     var sheetAcl = getOrCreateSheet(ss, SHEET_ACL, ACL_HEADERS, "#312e81");
@@ -1063,6 +1460,8 @@ function doGet(e) {
     var sheetNom = getOrCreateSheet(ss, SHEET_NOMENCLATURE, NOMENCLATURE_HEADERS, "#1e3a8a");
     var sheetStk = getOrCreateSheet(ss, SHEET_STOCK, STOCK_HEADERS, "#065f46");
     var sheetOps = getOrCreateSheet(ss, SHEET_OPERATIONS, OPERATIONS_HEADERS, "#701a75");
+    var sheetOrders = getOrCreateSheet(ss, SHEET_ORDERS, ORDER_HEADERS, "#0284c7");
+    var sheetRacks = getOrCreateSheet(ss, SHEET_WAREHOUSE_CONFIG, RACK_HEADERS, "#475569");
     
     var brands = readSheetData(sheetBrands, BRAND_HEADERS);
     var aclUsers = readSheetData(sheetAcl, ACL_HEADERS);
@@ -1070,6 +1469,21 @@ function doGet(e) {
     var nomenclature = readSheetData(sheetNom, NOMENCLATURE_HEADERS);
     var stock = readSheetData(sheetStk, STOCK_HEADERS);
     var operations = readSheetData(sheetOps, OPERATIONS_HEADERS);
+    var orders = readSheetData(sheetOrders, ORDER_HEADERS);
+    var warehouseRacks = readSheetData(sheetRacks, RACK_HEADERS);
+    
+    // Парсим состав товаров для каждого заказа
+    for (var oi = 0; oi < orders.length; oi++) {
+      if (typeof orders[oi].itemsJson === "string" && orders[oi].itemsJson) {
+        try {
+          orders[oi].items = JSON.parse(orders[oi].itemsJson);
+        } catch(e) {
+          orders[oi].items = [];
+        }
+      } else if (!orders[oi].items) {
+        orders[oi].items = [];
+      }
+    }
     
     // Если запрос делает пользователь со статусом Brand — отдаем ТОЛЬКО данные его бренда
     var brandFilter = params.brandId || "";
@@ -1078,6 +1492,15 @@ function doGet(e) {
       nomenclature = nomenclature.filter(function(n) { return String(n.brandId) === String(brandFilter); });
       stock = stock.filter(function(s) { return String(s.brandId) === String(brandFilter); });
       operations = operations.filter(function(o) { return String(o.brandId) === String(brandFilter); });
+      orders = orders.filter(function(ord) {
+        if (String(ord.brandId) === String(brandFilter)) return true;
+        if (Array.isArray(ord.items)) {
+          return ord.items.some(function(it) {
+            return String(it.brandId) === String(brandFilter) || String(it.brand) === String(brandFilter);
+          });
+        }
+        return false;
+      });
     }
     
     var props = PropertiesService.getScriptProperties();
@@ -1092,7 +1515,9 @@ function doGet(e) {
       auditLogs: auditLogs,
       nomenclature: nomenclature,
       stock: stock,
-      operations: operations
+      operations: operations,
+      orders: orders,
+      warehouseRacks: warehouseRacks
     });
   } catch (err) {
     return createJsonResponse({
@@ -1133,6 +1558,8 @@ function doPost(e) {
     var sheetNom = getOrCreateSheet(ss, SHEET_NOMENCLATURE, NOMENCLATURE_HEADERS, "#1e3a8a");
     var sheetStk = getOrCreateSheet(ss, SHEET_STOCK, STOCK_HEADERS, "#065f46");
     var sheetOps = getOrCreateSheet(ss, SHEET_OPERATIONS, OPERATIONS_HEADERS, "#701a75");
+    var sheetOrders = getOrCreateSheet(ss, SHEET_ORDERS, ORDER_HEADERS, "#0284c7");
+    var sheetRacks = getOrCreateSheet(ss, SHEET_WAREHOUSE_CONFIG, RACK_HEADERS, "#475569");
     
     // МЕТОД 0: checkAccess / checkUserAccess
     if (action === "checkAccess" || action === "checkUserAccess") {
@@ -1162,6 +1589,20 @@ function doPost(e) {
       var nomenclature = readSheetData(sheetNom, NOMENCLATURE_HEADERS);
       var stock = readSheetData(sheetStk, STOCK_HEADERS);
       var operations = readSheetData(sheetOps, OPERATIONS_HEADERS);
+      var orders = readSheetData(sheetOrders, ORDER_HEADERS);
+      var warehouseRacks = readSheetData(sheetRacks, RACK_HEADERS);
+      
+      for (var oi = 0; oi < orders.length; oi++) {
+        if (typeof orders[oi].itemsJson === "string" && orders[oi].itemsJson) {
+          try {
+            orders[oi].items = JSON.parse(orders[oi].itemsJson);
+          } catch(e) {
+            orders[oi].items = [];
+          }
+        } else if (!orders[oi].items) {
+          orders[oi].items = [];
+        }
+      }
       
       var brandFilter = payload.brandId || "";
       if (brandFilter) {
@@ -1169,6 +1610,15 @@ function doPost(e) {
         nomenclature = nomenclature.filter(function(n) { return String(n.brandId) === String(brandFilter); });
         stock = stock.filter(function(s) { return String(s.brandId) === String(brandFilter); });
         operations = operations.filter(function(o) { return String(o.brandId) === String(brandFilter); });
+        orders = orders.filter(function(ord) {
+          if (String(ord.brandId) === String(brandFilter)) return true;
+          if (Array.isArray(ord.items)) {
+            return ord.items.some(function(it) {
+              return String(it.brandId) === String(brandFilter) || String(it.brand) === String(brandFilter);
+            });
+          }
+          return false;
+        });
       }
       
       return createJsonResponse({
@@ -1178,7 +1628,9 @@ function doPost(e) {
         auditLogs: auditLogs,
         nomenclature: nomenclature,
         stock: stock,
-        operations: operations
+        operations: operations,
+        orders: orders,
+        warehouseRacks: warehouseRacks
       });
     }
     
@@ -1190,6 +1642,8 @@ function doPost(e) {
       var countNom = 0;
       var countStock = 0;
       var countOps = 0;
+      var countOrders = 0;
+      var countRacks = 0;
       
       if (Array.isArray(payload.brands)) countBrands = batchWriteSheet(sheetBrands, BRAND_HEADERS, payload.brands);
       if (Array.isArray(payload.aclUsers)) countAcl = batchWriteSheet(sheetAcl, ACL_HEADERS, payload.aclUsers);
@@ -1197,6 +1651,8 @@ function doPost(e) {
       if (Array.isArray(payload.nomenclature)) countNom = batchWriteSheet(sheetNom, NOMENCLATURE_HEADERS, payload.nomenclature);
       if (Array.isArray(payload.stock)) countStock = batchWriteSheet(sheetStk, STOCK_HEADERS, payload.stock);
       if (Array.isArray(payload.operations)) countOps = batchWriteSheet(sheetOps, OPERATIONS_HEADERS, payload.operations);
+      if (Array.isArray(payload.orders)) countOrders = batchWriteSheet(sheetOrders, ORDER_HEADERS, payload.orders);
+      if (Array.isArray(payload.warehouseRacks)) countRacks = batchWriteSheet(sheetRacks, RACK_HEADERS, payload.warehouseRacks);
       
       return createJsonResponse({
         success: true,
@@ -1325,124 +1781,20 @@ function doPost(e) {
         return createJsonResponse({ success: false, error: "Требуется объект operation с полями sku и type" });
       }
       
-      var opId = op.id || ("OP-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6));
-      var opTimestamp = op.timestamp || new Date().toISOString();
-      var opType = op.type; // Продажа, Поставка, Возврат, Списание, Перемещение, Инвентаризация
-      var opSku = String(op.sku).trim();
-      var opBarcode = String(op.barcode || "").trim();
-      var opBrandId = String(op.brandId || "").trim();
-      var opBrandName = String(op.brandName || "").trim();
-      var opPlace = String(op.place || "Рейл 1").trim();
-      var opQty = Number(op.quantity) || 1;
-      var opPrice = Number(op.price) || 0;
-      var opTotal = Number(op.totalAmount) || (opQty * opPrice);
-      var authorName = op.authorName || "Продавец";
-      var authorTgId = cleanTgId(op.authorTgId);
-      var receiptId = op.receiptId || "";
-      var notes = op.notes || "";
-      
-      // 1. Запись в журнал операций Stock_Operations
-      var opRow = [
-        opId,
-        opTimestamp,
-        opType,
-        opSku,
-        opBarcode,
-        opBrandId,
-        opBrandName,
-        opQty,
-        opPrice,
-        opTotal,
-        opPlace,
-        authorName,
-        authorTgId,
-        receiptId,
-        notes
-      ];
-      sheetOps.appendRow(opRow);
-      
-      // 2. Обновление остатков на листе Stock
-      var stkLastRow = sheetStk.getLastRow();
-      var foundStkRow = 0;
-      var currQty = 0;
-      var currReserved = 0;
-      
-      if (stkLastRow > 1) {
-        var stkData = sheetStk.getRange(2, 1, stkLastRow - 1, STOCK_HEADERS.length).getValues();
-        for (var s = 0; s < stkData.length; s++) {
-          var rowSku = String(stkData[s][0]).trim();
-          var rowPlace = String(stkData[s][3]).trim();
-          if (rowSku === opSku && rowPlace === opPlace) {
-            foundStkRow = s + 2;
-            currQty = Number(stkData[s][4]) || 0;
-            currReserved = Number(stkData[s][5]) || 0;
-            if (!opBarcode && stkData[s][1]) opBarcode = String(stkData[s][1]);
-            if (!opBrandId && stkData[s][2]) opBrandId = String(stkData[s][2]);
-            break;
-          }
-        }
-      }
-      
-      var newQty = currQty;
-      if (opType === "Продажа" || opType === "Списание") {
-        newQty = Math.max(0, currQty - Math.abs(opQty));
-      } else if (opType === "Поставка" || opType === "Возврат") {
-        newQty = currQty + Math.abs(opQty);
-      } else if (opType === "Инвентаризация") {
-        newQty = Math.max(0, Math.abs(opQty));
-      } else if (opType === "Перемещение") {
-        newQty = Math.max(0, currQty - Math.abs(opQty));
-        
-        var targetPlace = String(op.targetPlace || "Склад").trim();
-        var targetFoundRow = 0;
-        var targetCurrQty = 0;
-        if (stkLastRow > 1) {
-          var allStk = sheetStk.getRange(2, 1, stkLastRow - 1, STOCK_HEADERS.length).getValues();
-          for (var t = 0; t < allStk.length; t++) {
-            if (String(allStk[t][0]).trim() === opSku && String(allStk[t][3]).trim() === targetPlace) {
-              targetFoundRow = t + 2;
-              targetCurrQty = Number(allStk[t][4]) || 0;
-              break;
-            }
-          }
-        }
-        var newTargetQty = targetCurrQty + Math.abs(opQty);
-        var targetAvail = Math.max(0, newTargetQty);
-        if (targetFoundRow > 0) {
-          sheetStk.getRange(targetFoundRow, 5, 1, 4).setValues([[newTargetQty, 0, targetAvail, new Date().toISOString()]]);
-        } else {
-          sheetStk.appendRow([opSku, opBarcode, opBrandId, targetPlace, newTargetQty, 0, targetAvail, new Date().toISOString()]);
-        }
-      }
-      
-      var newAvail = Math.max(0, newQty - currReserved);
+      var opRes = executeSingleStockOperation(ss, sheetOps, sheetStk, sheetBrands, op);
       var nowIso = new Date().toISOString();
-      
-      if (foundStkRow > 0) {
-        sheetStk.getRange(foundStkRow, 5, 1, 4).setValues([[newQty, currReserved, newAvail, nowIso]]);
-      } else if (newQty > 0) {
-        sheetStk.appendRow([opSku, opBarcode, opBrandId, opPlace, newQty, currReserved, newAvail, nowIso]);
-      }
-      
-      // 3. Синхронизируем карточку бренда в Brands
-      if (opBrandId) {
-        updateBrandStockCount(sheetBrands, sheetStk, opBrandId);
-      }
-      
-      // 4. Обновляем версию состояния
       var props = PropertiesService.getScriptProperties();
-      var newHash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "op:" + opId + ":" + nowIso));
-      props.setProperty("STOCK_STATE_HASH", newHash);
+      props.setProperty("STOCK_STATE_HASH", Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "op:" + opRes.opId + ":" + nowIso)));
       props.setProperty("STOCK_STATE_UPDATED_AT", nowIso);
       
       return createJsonResponse({
         success: true,
-        operationId: opId,
-        type: opType,
-        sku: opSku,
-        place: opPlace,
-        remainingQuantity: newQty,
-        available: newAvail
+        operationId: opRes.opId,
+        type: op.type,
+        sku: op.sku,
+        place: op.place,
+        remainingQuantity: opRes.newQty,
+        available: opRes.available
       });
     }
     
@@ -1663,6 +2015,146 @@ function doPost(e) {
         return createJsonResponse({ success: true, message: "Остатки обновлены пакетом", count: sCount });
       }
       return createJsonResponse({ success: false, error: "Требуется массив stock" });
+    }
+    
+    // МЕТОД 10: issueOrder — выдача оплаченного заказа покупателю с авто-списанием
+    if (action === "issueOrder") {
+      var ordId = String(payload.orderId || "").trim();
+      var issuedItems = Array.isArray(payload.items) ? payload.items : [];
+      var ordPlace = String(payload.place || "Рейл бренда").trim();
+      var authorName = payload.authorName || "Кассир";
+      var authorTgId = cleanTgId(payload.authorTgId);
+      
+      var ordersData = sheetOrders.getDataRange().getValues();
+      var targetOrderRow = 0;
+      for (var or = 1; or < ordersData.length; or++) {
+        if (String(ordersData[or][0]) === ordId || String(ordersData[or][1]) === ordId) {
+          targetOrderRow = or + 1;
+          break;
+        }
+      }
+      
+      var nowIso = new Date().toISOString();
+      if (targetOrderRow > 0) {
+        sheetOrders.getRange(targetOrderRow, 13).setValue("issued"); // status
+        sheetOrders.getRange(targetOrderRow, 17).setValue(nowIso); // issuedAt
+      }
+      
+      // Списываем каждую позицию из указанной локации (рейл или полка склада)
+      for (var it = 0; it < issuedItems.length; it++) {
+        var item = issuedItems[it];
+        var itemPlace = item.place || ordPlace;
+        executeSingleStockOperation(ss, sheetOps, sheetStk, sheetBrands, {
+          type: "Продажа",
+          sku: item.sku,
+          barcode: item.barcode || "",
+          brandId: item.brandId || "",
+          brandName: item.brand || item.brandName || "",
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          totalAmount: (item.quantity || 1) * (item.price || 0),
+          place: itemPlace,
+          receiptId: ordId,
+          authorName: authorName,
+          authorTgId: authorTgId,
+          notes: "Выдача заказа #" + ordId
+        });
+      }
+      
+      var props = PropertiesService.getScriptProperties();
+      var newHash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "issue:" + ordId + ":" + nowIso));
+      props.setProperty("STOCK_STATE_HASH", newHash);
+      props.setProperty("STOCK_STATE_UPDATED_AT", nowIso);
+      
+      return createJsonResponse({ success: true, orderId: ordId, issuedAt: nowIso });
+    }
+
+    // МЕТОД 11: processReturn — возврат позиций заказа с возвратом на склад/рейл
+    if (action === "processReturn") {
+      var ordId = String(payload.orderId || "").trim();
+      var returnedItems = Array.isArray(payload.items) ? payload.items : [];
+      var returnReason = payload.returnReason || "";
+      var returnPhotos = payload.returnPhotos || "";
+      var authorName = payload.authorName || "Кассир";
+      var authorTgId = cleanTgId(payload.authorTgId);
+      
+      var ordersData = sheetOrders.getDataRange().getValues();
+      var targetOrderRow = 0;
+      for (var or = 1; or < ordersData.length; or++) {
+        if (String(ordersData[or][0]) === ordId || String(ordersData[or][1]) === ordId) {
+          targetOrderRow = or + 1;
+          break;
+        }
+      }
+      
+      var nowIso = new Date().toISOString();
+      if (targetOrderRow > 0) {
+        sheetOrders.getRange(targetOrderRow, 13).setValue("returned"); // status
+        sheetOrders.getRange(targetOrderRow, 18).setValue(nowIso); // returnedAt
+        sheetOrders.getRange(targetOrderRow, 19).setValue(returnReason);
+        if (returnPhotos) sheetOrders.getRange(targetOrderRow, 20).setValue(returnPhotos);
+      }
+      
+      // Возвращаем каждую позицию в остатки на указанную полку или рейл
+      for (var rit = 0; rit < returnedItems.length; rit++) {
+        var rItem = returnedItems[rit];
+        var rPlace = rItem.place || "Склад (A-1)";
+        executeSingleStockOperation(ss, sheetOps, sheetStk, sheetBrands, {
+          type: "Возврат",
+          sku: rItem.sku,
+          barcode: rItem.barcode || "",
+          brandId: rItem.brandId || "",
+          brandName: rItem.brand || rItem.brandName || "",
+          quantity: rItem.quantity || 1,
+          price: rItem.price || 0,
+          totalAmount: (rItem.quantity || 1) * (rItem.price || 0),
+          place: rPlace,
+          receiptId: ordId,
+          authorName: authorName,
+          authorTgId: authorTgId,
+          notes: "Возврат по заказу #" + ordId + (returnReason ? " (" + returnReason + ")" : "")
+        });
+      }
+      
+      var props = PropertiesService.getScriptProperties();
+      var newHash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "return:" + ordId + ":" + nowIso));
+      props.setProperty("STOCK_STATE_HASH", newHash);
+      props.setProperty("STOCK_STATE_UPDATED_AT", nowIso);
+      
+      return createJsonResponse({ success: true, orderId: ordId, returnedAt: nowIso });
+    }
+
+    // МЕТОД 12: syncWarehouseConfig — обновление стеллажей и полок склада
+    if (action === "syncWarehouseConfig") {
+      var racks = Array.isArray(payload.warehouseRacks) ? payload.warehouseRacks : [];
+      var rCount = batchWriteSheet(sheetRacks, RACK_HEADERS, racks);
+      var nowIso = new Date().toISOString();
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty("STOCK_STATE_HASH", Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "racks:" + nowIso)));
+      props.setProperty("STOCK_STATE_UPDATED_AT", nowIso);
+      return createJsonResponse({ success: true, count: rCount });
+    }
+
+    // МЕТОД 13: webhookOrder / createOrder — универсальный прием оплаченных заказов с сайтов
+    if (action === "webhookOrder" || action === "createOrder" || action === "tildaOrder") {
+      var parsedOrder = parseIncomingOrder(payload, e ? e.parameter : {});
+      if (!parsedOrder.isPaid) {
+        return createJsonResponse({ success: false, message: "Заказ проигнорирован: принимаются только оплаченные заказы." });
+      }
+      
+      var orderRow = [];
+      for (var oc = 0; oc < ORDER_HEADERS.length; oc++) {
+        var hk = ORDER_HEADERS[oc];
+        orderRow.push(parsedOrder[hk] !== undefined && parsedOrder[hk] !== null ? parsedOrder[hk] : "");
+      }
+      sheetOrders.appendRow(orderRow);
+      
+      var nowIso = new Date().toISOString();
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty("STOCK_STATE_HASH", Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, "order:" + parsedOrder.id + ":" + nowIso)));
+      props.setProperty("STOCK_STATE_UPDATED_AT", nowIso);
+      
+      return createJsonResponse({ success: true, orderId: parsedOrder.id, message: "Оплаченный заказ принят в CRM" });
     }
     
     return createJsonResponse({ success: false, error: "Неизвестное действие (action): " + action });
