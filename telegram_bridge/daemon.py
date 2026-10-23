@@ -391,33 +391,50 @@ def status_heartbeat_loop():
 
 SESSION_FILE = os.path.join(CURRENT_DIR, "session.json")
 
+def get_live_hub_port() -> int:
+    """Finds the active hub port from the running agy process."""
+    try:
+        out = subprocess.check_output(["ps", "aux"], text=True)
+        m = re.search(r"--hub-port=(\d+)", out)
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return 0
+
 def get_agent_env() -> dict:
     env = os.environ.copy()
+    live_port = get_live_hub_port()
     
-    if CONFIG.get("ls_address"):
-        env["ANTIGRAVITY_LS_ADDRESS"] = CONFIG["ls_address"]
-    if CONFIG.get("csrf_token"):
-        env["ANTIGRAVITY_CSRF_TOKEN"] = CONFIG["csrf_token"]
-        
+    # Check session.json for CSRF token
+    csrf_token = None
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 s = json.load(f)
-                if s.get("ls_address") and "ANTIGRAVITY_LS_ADDRESS" not in env:
-                    env["ANTIGRAVITY_LS_ADDRESS"] = s["ls_address"]
-                if s.get("csrf_token") and "ANTIGRAVITY_CSRF_TOKEN" not in env:
-                    env["ANTIGRAVITY_CSRF_TOKEN"] = s["csrf_token"]
+                ls_addr = s.get("ls_address", "")
+                m = re.search(r":(\d+)$", ls_addr)
+                session_port = int(m.group(1)) if m else 0
+                
+                # If session.json port matches live port, use CSRF token
+                if live_port > 0 and session_port == live_port:
+                    csrf_token = s.get("csrf_token")
+                elif live_port > 0 and session_port != 0 and session_port != live_port:
+                    # Invalidate mismatched session file
+                    print(f"[Session] Invalidating stale session.json (port {session_port} != live {live_port})", flush=True)
+                    try:
+                        os.remove(SESSION_FILE)
+                    except Exception:
+                        pass
+                else:
+                    csrf_token = s.get("csrf_token")
         except Exception as e:
             print(f"[Session] Error reading {SESSION_FILE}: {e}", file=sys.stderr)
             
-    if "ANTIGRAVITY_LS_ADDRESS" not in env:
-        try:
-            out = subprocess.check_output(["ps", "aux"], text=True)
-            m = re.search(r"--hub-port=(\d+)", out)
-            if m:
-                env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{m.group(1)}"
-        except Exception:
-            pass
+    if live_port > 0:
+        env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{live_port}"
+    if csrf_token:
+        env["ANTIGRAVITY_CSRF_TOKEN"] = csrf_token
             
     return env
 
@@ -428,6 +445,7 @@ def send_to_antigravity(text: str) -> bool:
     cmd = [agentapi_path, "agentapi", "send-message", conv_id, text]
     print(f"[Antigravity] Forwarding message to conversation {conv_id}...", flush=True)
     
+    # Attempt 1: Using detected active port and synced token
     env = get_agent_env()
     try:
         res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=15)
@@ -435,11 +453,29 @@ def send_to_antigravity(text: str) -> bool:
             print(f"[Antigravity] Successfully forwarded: {res.stdout.strip()}", flush=True)
             return True
         else:
-            print(f"[Antigravity] agentapi failed (code {res.returncode}): {res.stderr} | {res.stdout}", file=sys.stderr)
-            return False
+            print(f"[Antigravity] Attempt 1 failed (code {res.returncode}): {res.stderr} | {res.stdout}", file=sys.stderr)
     except Exception as e:
-        print(f"[Antigravity] Exception running agentapi: {e}", file=sys.stderr)
-        return False
+        print(f"[Antigravity] Attempt 1 exception: {e}", file=sys.stderr)
+        
+    # Attempt 2 (Fallback): Run with clean environment (auto-discovery)
+    print("[Antigravity] Retrying with clean auto-discovery environment...", flush=True)
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("ANTIGRAVITY_")}
+    try:
+        res = subprocess.run(cmd, env=clean_env, capture_output=True, text=True, timeout=15)
+        if res.returncode == 0:
+            print(f"[Antigravity] Fallback cleanly forwarded: {res.stdout.strip()}", flush=True)
+            if os.path.exists(SESSION_FILE):
+                try:
+                    os.remove(SESSION_FILE)
+                except Exception:
+                    pass
+            return True
+        else:
+            print(f"[Antigravity] Fallback failed (code {res.returncode}): {res.stderr} | {res.stdout}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Antigravity] Fallback exception: {e}", file=sys.stderr)
+        
+    return False
 
 # --- AUTHORIZATION GATE ---
 
@@ -618,8 +654,11 @@ def process_telegram_update(update: dict):
                 recognized_text = transcribe_audio_gemini(audio_bytes, mime, api_key, model_name)
                 
                 if recognized_text:
+                    print(f"[Voice Recognized] {recognized_text}", flush=True)
                     tg_send_message(chat_id, f"🎙 <b>Распознано:</b>\n«<i>{recognized_text}</i>»\n\n📥 <i>Передано в Antigravity...</i>")
-                    send_to_antigravity(f"Голосовая задача от владельца (@tvoyaddoma): {recognized_text}")
+                    ok = send_to_antigravity(f"Голосовая задача от владельца (@tvoyaddoma): {recognized_text}")
+                    if not ok:
+                        tg_send_message(chat_id, "⚠️ <i>Не удалось доставить задачу в Antigravity. Проверьте статус подключения.</i>")
                 else:
                     tg_send_message(chat_id, "⚠️ Не удалось распознать слова в аудиозаписи.")
             except Exception as e:
@@ -628,8 +667,11 @@ def process_telegram_update(update: dict):
             return
 
         if text:
+            print(f"[Text Task] {text}", flush=True)
             tg_send_message(chat_id, "📥 <i>Задача принята и передана в Antigravity...</i>")
-            send_to_antigravity(f"Задача от владельца (@tvoyaddoma): {text}")
+            ok = send_to_antigravity(f"Задача от владельца (@tvoyaddoma): {text}")
+            if not ok:
+                tg_send_message(chat_id, "⚠️ <i>Не удалось доставить задачу в Antigravity. Проверьте статус подключения.</i>")
             return
 
 # --- LONG POLLING THREAD ---
@@ -785,10 +827,15 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
 
         # 4. Sync Antigravity session from hook
         elif path == "/sync-session":
-            if payload.get("ls_address"):
-                CONFIG["ls_address"] = payload["ls_address"]
-            if payload.get("csrf_token"):
-                CONFIG["csrf_token"] = payload["csrf_token"]
+            ls_addr = payload.get("ls_address")
+            csrf_tok = payload.get("csrf_token")
+            if ls_addr and csrf_tok:
+                try:
+                    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+                        json.dump({"ls_address": ls_addr, "csrf_token": csrf_tok}, f)
+                    print(f"[Session] Synced session from hook: {ls_addr}", flush=True)
+                except Exception as e:
+                    print(f"[Sync-Session Error] {e}", file=sys.stderr)
             self._send_json({"status": "synced"})
             return
 
