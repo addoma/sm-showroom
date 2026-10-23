@@ -4,7 +4,7 @@
 Telegram Bridge Daemon for Antigravity.
 Provides two-way interaction between Antigravity chat session and Telegram Bot:
 - Remote task creation (text & voice via Gemini Flash STT)
-- Remote command approval with Telegram inline buttons
+- Remote command approval with Telegram inline buttons & permanent autopilot toggle
 - Task completion notifications with concise 1-sentence (10-20 words) summaries
 - Automatic .md plan attachment if /plan was requested
 - Live Antigravity connection status bar in a pinned message (updated every 45 sec)
@@ -55,7 +55,8 @@ def load_config() -> dict:
         "allowed_username": "tvoyaddoma",
         "allowed_phone": "79266011608",
         "allowed_chat_id": 275899743,
-        "status_message_id": None,
+        "status_message_id": 44,
+        "full_terminal_access": True,
         "conversation_id": "e942a502-2c31-4a43-9392-a2b04b0a99ba",
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": "gemini-3.5-flash-lite",
@@ -327,7 +328,7 @@ def get_laptop_power_status() -> str:
 def status_heartbeat_loop():
     """Periodically (every 45 sec) updates the pinned status bar in Telegram."""
     print("[Status Bar] Starting connection heartbeat loop (45s)...", flush=True)
-    time.sleep(3)  # initial brief warm-up
+    time.sleep(3)
     
     while True:
         try:
@@ -339,12 +340,14 @@ def status_heartbeat_loop():
             is_online, port = get_antigravity_status()
             power_info = get_laptop_power_status()
             now_str = datetime.datetime.now().strftime("%H:%M:%S")
+            access_mode = "🚀 Автопилот (Все команды разрешены)" if CONFIG.get("full_terminal_access") else "🛡 Интерактивный (Запрос подтверждений)"
             
             if is_online:
                 status_text = (
                     "🟢 <b>Статус-бар: Antigravity в сети (Online)</b>\n\n"
                     f"💻 <b>Ноутбук:</b> {power_info}\n"
                     f"📡 <b>Связь:</b> Активна (порт {port})\n"
+                    f"⚙️ <b>Доступ:</b> {access_mode}\n"
                     f"⏱ <b>Пинг:</b> {now_str} • Каждые 45 сек\n\n"
                     "<i>💡 Если время не обновляется &gt;1 мин — ноутбук выключен, спит или потеряна связь.</i>"
                 )
@@ -475,7 +478,8 @@ def process_telegram_update(update: dict):
         chat_id = message.get("chat", {}).get("id")
         msg_id = message.get("message_id")
         
-        if data.startswith("approve:") or data.startswith("deny:"):
+        # 1. Handle command approval callbacks
+        if data.startswith("approve:") or data.startswith("deny:") or data.startswith("approve_always:"):
             parts = data.split(":", 1)
             action = parts[0]
             req_id = parts[1]
@@ -488,7 +492,17 @@ def process_telegram_update(update: dict):
                         tg_answer_callback(cb["id"], "✅ Разрешено!")
                         tg_edit_message_text(
                             chat_id, msg_id,
-                            f"✅ <b>Действие подтверждено:</b>\n<code>{entry['command']}</code>",
+                            f"✅ <b>Действие подтверждено:</b>\n<code>{escape_html(entry['command'])}</code>",
+                            reply_markup={"inline_keyboard": []}
+                        )
+                    elif action == "approve_always":
+                        CONFIG["full_terminal_access"] = True
+                        save_config(CONFIG)
+                        entry["decision"] = "allow"
+                        tg_answer_callback(cb["id"], "🚀 Полный доступ НАВСЕГДА включен!")
+                        tg_edit_message_text(
+                            chat_id, msg_id,
+                            f"🚀 <b>Включен постоянный доступ (Автопилот) НАВСЕГДА!</b>\nВсе будущие команды будут выполняться автоматически без запросов.\n\n<code>{escape_html(entry['command'])}</code>",
                             reply_markup={"inline_keyboard": []}
                         )
                     else:
@@ -496,13 +510,34 @@ def process_telegram_update(update: dict):
                         tg_answer_callback(cb["id"], "❌ Отклонено!")
                         tg_edit_message_text(
                             chat_id, msg_id,
-                            f"❌ <b>Действие отклонено:</b>\n<code>{entry['command']}</code>",
+                            f"❌ <b>Действие отклонено:</b>\n<code>{escape_html(entry['command'])}</code>",
                             reply_markup={"inline_keyboard": []}
                         )
                     entry["event"].set()
                 else:
                     tg_answer_callback(cb["id"], "Срок действия запроса истек")
-        return
+            return
+
+        # 2. Handle /access toggle callbacks
+        if data.startswith("set_access:"):
+            mode = data.split(":", 1)[1]
+            if mode == "full":
+                CONFIG["full_terminal_access"] = True
+                save_config(CONFIG)
+                tg_answer_callback(cb["id"], "🚀 Полный доступ навсегда включен!")
+                tg_edit_message_text(
+                    chat_id, msg_id,
+                    "🚀 <b>Полный доступ к терминалу НАВСЕГДА активирован!</b>\nВсе команды терминала теперь выполняются автоматически на полной скорости."
+                )
+            else:
+                CONFIG["full_terminal_access"] = False
+                save_config(CONFIG)
+                tg_answer_callback(cb["id"], "🛡 Режим подтверждений активирован!")
+                tg_edit_message_text(
+                    chat_id, msg_id,
+                    "🛡 <b>Режим подтверждений включен!</b>\nПеред выполнением важных команд бот будет присылать кнопки подтверждения."
+                )
+            return
 
     if "message" in update:
         msg = update["message"]
@@ -523,15 +558,46 @@ def process_telegram_update(update: dict):
             return
 
         text = msg.get("text", "").strip()
+
+        # Command /access or /autopilot
+        if text.startswith("/access") or text.startswith("/autopilot"):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].lower() in ("off", "ask", "false", "0"):
+                CONFIG["full_terminal_access"] = False
+                save_config(CONFIG)
+                tg_send_message(chat_id, "🛡 <b>Режим подтверждений включен:</b> бот будет запрашивать разрешение перед выполнением команд.")
+            elif len(parts) > 1 and parts[1].lower() in ("on", "full", "true", "1", "always"):
+                CONFIG["full_terminal_access"] = True
+                save_config(CONFIG)
+                tg_send_message(chat_id, "🚀 <b>Полный доступ НАВСЕГДА активирован:</b> все команды терминала разрешаются автоматически без запросов!")
+            else:
+                curr = "🚀 Включен (Полный автопилот навсегда)" if CONFIG.get("full_terminal_access") else "🛡 Выключен (Запрос подтверждений)"
+                kb = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "🚀 Полный доступ навсегда", "callback_data": "set_access:full"},
+                            {"text": "🛡 Запрашивать подтверждения", "callback_data": "set_access:ask"}
+                        ]
+                    ]
+                }
+                tg_send_message(
+                    chat_id,
+                    f"⚙️ <b>Управление доступом к терминалу:</b>\nТекущий статус: <b>{curr}</b>\n\nВыберите нужный режим:",
+                    reply_markup=kb
+                )
+            return
+
         if text.startswith("/start") or text.startswith("/help"):
+            acc_status = "🚀 Автопилот (Все команды разрешены)" if CONFIG.get("full_terminal_access") else "🛡 Интерактивный (Запрос подтверждений)"
             tg_send_message(
                 chat_id,
                 "👋 <b>Приветствую, Иван!</b>\n\n"
                 "🤖 Бот успешно соединен с вашей текущей сессией Antigravity.\n\n"
+                f"⚙️ <b>Режим выполнения команд:</b> {acc_status}\n\n"
                 "<b>Возможности:</b>\n"
                 "• 📝 <b>Текстовые задачи:</b> напишите задачу сюда, и она сразу появится в чате Antigravity.\n"
                 "• 🎙 <b>Голосовые заметки:</b> отправьте голосовое — Gemini Flash мгновенно распознает речь и передаст задачу.\n"
-                "• ⚡️ <b>Удаленные подтверждения:</b> при запуске команд бот пришлет кнопки подтверждения прямо на телефон.\n"
+                "• ⚡️ <b>Управление доступом:</b> команда /access для переключения полного автопилота или ручных подтверждений.\n"
                 "• 🏁 <b>Уведомление о готовности:</b> краткая сводка (10-20 слов) по завершении каждого шага.\n"
                 "• 📄 <b>Планы задач:</b> если в запросе был /plan, готовый .md файл сразу прикрепится к сообщению.\n"
                 "• 📌 <b>Статус-бар:</b> закрепленное сообщение показывает реальное состояние подключения ноутбука каждые 45 сек."
@@ -613,7 +679,6 @@ def handle_notify_finished_async(chat_id: int, payload: dict):
         if plan_path and os.path.exists(plan_path):
             doc_res = tg_send_document(chat_id, plan_path, caption=full_text)
             if not doc_res.get("ok"):
-                # Fallback: send text then document
                 tg_send_message(chat_id, full_text)
                 tg_send_document(chat_id, plan_path)
             print(f"[Notifier] Sent completion notification with plan {os.path.basename(plan_path)}", flush=True)
@@ -632,7 +697,7 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json({"status": "ok", "allowed_chat_id": CONFIG.get("allowed_chat_id")})
+            self._send_json({"status": "ok", "allowed_chat_id": CONFIG.get("allowed_chat_id"), "full_terminal_access": CONFIG.get("full_terminal_access")})
         else:
             self._send_json({"error": "Not found"}, status=404)
 
@@ -650,6 +715,11 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
         if path == "/request-approval":
             cmd = payload.get("command", "")
             action = payload.get("action", "run_command")
+            
+            # If permanent full terminal access is activated, allow immediately
+            if CONFIG.get("full_terminal_access", False):
+                self._send_json({"decision": "allow", "reason": "Full terminal access permanently enabled"})
+                return
             
             chat_id = CONFIG.get("allowed_chat_id")
             if not chat_id:
@@ -669,8 +739,11 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
             keyboard = {
                 "inline_keyboard": [
                     [
-                        {"text": "✅ Разрешить", "callback_data": f"approve:{req_id}"},
+                        {"text": "✅ Разрешить один раз", "callback_data": f"approve:{req_id}"},
                         {"text": "❌ Отклонить", "callback_data": f"deny:{req_id}"}
+                    ],
+                    [
+                        {"text": "🚀 Разрешать ВСЁ навсегда (Автопилот)", "callback_data": f"approve_always:{req_id}"}
                     ]
                 ]
             }
@@ -707,7 +780,7 @@ class LocalIPCHandler(BaseHTTPRequestHandler):
 
         # 3. Healthcheck / Ping
         elif path == "/health":
-            self._send_json({"status": "ok", "allowed_chat_id": CONFIG.get("allowed_chat_id")})
+            self._send_json({"status": "ok", "allowed_chat_id": CONFIG.get("allowed_chat_id"), "full_terminal_access": CONFIG.get("full_terminal_access")})
             return
 
         # 4. Sync Antigravity session from hook
@@ -744,6 +817,7 @@ def main():
     print(f"  STT Model: {CONFIG.get('gemini_model')}", flush=True)
     print(f"  Conversation ID: {CONFIG.get('conversation_id')}", flush=True)
     print(f"  Status Bar Message ID: {CONFIG.get('status_message_id')}", flush=True)
+    print(f"  Full Terminal Access: {CONFIG.get('full_terminal_access')}", flush=True)
     print("==================================================", flush=True)
 
     # Thread 1: Telegram long poller

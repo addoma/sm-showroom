@@ -3,7 +3,8 @@
 """
 PreToolUse Hook for Antigravity.
 Intercepts tool executions (such as mutating terminal commands).
-Sends a remote approval request with interactive buttons to the Telegram Bot.
+Sends a remote approval request with interactive buttons to the Telegram Bot,
+or allows all commands automatically if full_terminal_access is enabled.
 """
 
 import sys
@@ -23,6 +24,18 @@ def is_safe_command(cmd: str) -> bool:
     for prefix in SAFE_PREFIXES:
         if trimmed.startswith(prefix):
             return True
+    return False
+
+def is_full_access_enabled() -> bool:
+    """Checks if permanent full terminal access is activated in config."""
+    cfg_file = os.path.expanduser("~/.gemini/antigravity/telegram_bridge/config.json")
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                return bool(cfg.get("full_terminal_access", False))
+        except Exception:
+            pass
     return False
 
 def make_ipc_request(path: str, data_dict: dict = None, timeout: int = 5):
@@ -55,6 +68,11 @@ def sync_session():
 def main():
     sync_session()
     try:
+        # If permanent full terminal access is enabled, approve all commands automatically
+        if is_full_access_enabled():
+            print(json.dumps({"decision": "allow"}))
+            return
+            
         raw_input = sys.stdin.read()
         if not raw_input.strip():
             print(json.dumps({"decision": "allow"}))
@@ -95,7 +113,7 @@ def main():
 
         # For any other tools (view_file, read_url, etc.), allow
         print(json.dumps({"decision": "allow"}))
-    except Exception as e:
+    except Exception:
         print(json.dumps({"decision": "allow"}), file=sys.stdout)
 
 if __name__ == "__main__":
