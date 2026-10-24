@@ -2603,6 +2603,11 @@
       useEffect(() => {
         if (authState.status !== 'authorized' || !autoDailyReminder || !adminChatId || botStatus !== 'connected') return;
         const checkAndSendDaily = () => {
+          const now = new Date();
+          const currentHour = now.getHours();
+          // Отправка ежедневной сводки в 12:00 дня (по 24-часовому формату)
+          if (currentHour < 12) return;
+
           const lastSentDate = localStorage.getItem('sm_crm_last_reminder_date');
           const today = getTodayDateString();
           if (lastSentDate !== today) {
@@ -2614,7 +2619,7 @@
           }
         };
         const timer = setTimeout(checkAndSendDaily, 4000);
-        const interval = setInterval(checkAndSendDaily, 60 * 60 * 1000);
+        const interval = setInterval(checkAndSendDaily, 15 * 60 * 1000); // проверяем каждые 15 минут
         return () => {
           clearTimeout(timer);
           clearInterval(interval);
